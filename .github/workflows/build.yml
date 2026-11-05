@@ -1,0 +1,81 @@
+name: Build
+
+on:
+  push:
+    branches: ["**"]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: Windows, os: windows-latest, pluginval: pluginval_Windows.zip, pv: ./pluginval.exe }
+          - { name: macOS,   os: macos-14,       pluginval: pluginval_macOS.zip,   pv: ./pluginval.app/Contents/MacOS/pluginval }
+          - { name: Linux,   os: ubuntu-22.04,   pluginval: pluginval_Linux.zip,   pv: xvfb-run -a ./pluginval }
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev \
+            libxext-dev libxcomposite-dev libfreetype-dev libfontconfig1-dev xvfb
+
+      - name: Configure
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Release "-DCMAKE_OSX_ARCHITECTURES=arm64;x86_64"
+
+      - name: Build
+        run: cmake --build build --config Release --parallel 4
+
+      - name: Engine tests
+        run: ctest --test-dir build -C Release --output-on-failure
+
+      - name: Package
+        run: |
+          mkdir -p dist
+          cd build/Lotus_artefacts/Release
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            7z a "$GITHUB_WORKSPACE/dist/Lotus-${{ matrix.name }}.zip" VST3/Lotus.vst3 Standalone/Lotus.exe
+          elif [ "$RUNNER_OS" = "macOS" ]; then
+            zip -qry "$GITHUB_WORKSPACE/dist/Lotus-${{ matrix.name }}.zip" VST3/Lotus.vst3 AU/Lotus.component Standalone/Lotus.app
+          else
+            zip -qry "$GITHUB_WORKSPACE/dist/Lotus-${{ matrix.name }}.zip" VST3/Lotus.vst3 LV2/Lotus.lv2 Standalone/Lotus
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Lotus-${{ matrix.name }}
+          path: dist/*.zip
+
+      - name: Validate with pluginval
+        run: |
+          curl -sSL -o pv.zip "https://github.com/Tracktion/pluginval/releases/download/v1.0.4/${{ matrix.pluginval }}"
+          unzip -q pv.zip
+          ${{ matrix.pv }} --strictness-level 5 --validate-in-process \
+            --validate "build/Lotus_artefacts/Release/VST3/Lotus.vst3"
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*.zip
