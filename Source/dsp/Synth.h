@@ -7,6 +7,7 @@
 // is responsible for not calling setSoundFont() concurrently with render().
 
 #include "Consoles.h"
+#include "Effects.h"
 #include "Envelope.h"
 #include "SoundFont.h"
 
@@ -31,6 +32,8 @@ struct EngineParams
     ConsoleId console   = ConsoleId::Modern;
     float masterGain    = 1.0f;   // linear
     int   bendRange     = 2;      // semitones
+
+    EffectParams fx;
 };
 
 class Synth
@@ -90,6 +93,7 @@ private:
     Voice& allocateVoice();
     void updatePitch (Voice& v) const;
     void renderEngine (float* outL, float* outR, int numEngineSamples);
+    void applyEffectsAndOutputStage (float* outL, float* outR, int n);
     void configureConsole();
 
     template <Interp interp>
@@ -110,7 +114,12 @@ private:
     float histL[4] {}, histR[4] {};
 
     std::vector<float> engineL, engineR;
+    std::vector<float> engineDryL, engineDryR, engineWetL, engineWetR;   // effect scratch
     int maxBlock = 512;
+
+    SnesEcho snesEcho;
+    Ps1Reverb ps1Reverb;
+    bool echoWasOn = false, reverbWasOn = false;
 
     std::array<Voice, maxVoices> voices;
     uint32_t ageCounter = 0, noteCounter = 0;

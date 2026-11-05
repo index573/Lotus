@@ -15,6 +15,16 @@ namespace ParamIDs
     inline constexpr const char* console   = "console";
     inline constexpr const char* volume    = "volume";
     inline constexpr const char* bendRange = "bendRange";
+
+    // Effects
+    inline constexpr const char* snesOn       = "snesEchoOn";
+    inline constexpr const char* snesDelay    = "snesEchoDelay";
+    inline constexpr const char* snesFeedback = "snesEchoFeedback";
+    inline constexpr const char* snesVolume   = "snesEchoVolume";
+    inline constexpr const char* snesFilter   = "snesEchoFilter";
+    inline constexpr const char* ps1On        = "ps1ReverbOn";
+    inline constexpr const char* ps1Preset    = "ps1ReverbPreset";
+    inline constexpr const char* ps1Depth     = "ps1ReverbDepth";
 }
 
 class LotusProcessor final : public juce::AudioProcessor
@@ -37,7 +47,7 @@ public:
     bool acceptsMidi() const override { return true; }
     bool producesMidi() const override { return false; }
     bool isMidiEffect() const override { return false; }
-    double getTailLengthSeconds() const override { return 0.0; }
+    double getTailLengthSeconds() const override;
 
     // Host "programs" are MIDI program numbers 0-127, resolved against the SoundFont.
     int getNumPrograms() override;
@@ -87,6 +97,14 @@ private:
     std::atomic<float>* pConsole = nullptr;
     std::atomic<float>* pVolume = nullptr;
     std::atomic<float>* pBendRange = nullptr;
+    std::atomic<float>* pSnesOn = nullptr;
+    std::atomic<float>* pSnesDelay = nullptr;
+    std::atomic<float>* pSnesFeedback = nullptr;
+    std::atomic<float>* pSnesVolume = nullptr;
+    std::atomic<float>* pSnesFilter = nullptr;
+    std::atomic<float>* pPs1On = nullptr;
+    std::atomic<float>* pPs1Preset = nullptr;
+    std::atomic<float>* pPs1Depth = nullptr;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (LotusProcessor)
 };

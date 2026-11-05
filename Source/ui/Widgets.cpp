@@ -96,7 +96,11 @@ Knob::Knob (juce::AudioProcessorValueTreeState& state, const juce::String& param
     attachment = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment> (state, paramId, slider);
 
     if (auto* p = state.getParameter (paramId))
+    {
         slider.setDoubleClickReturnValue (true, p->convertFrom0to1 (p->getDefaultValue()));
+        if (p->convertFrom0to1 (0.0f) < 0.0f && p->convertFrom0to1 (1.0f) > 0.0f)
+            slider.getProperties().set ("bipolar", true);   // arc grows from the centre
+    }
 }
 
 void Knob::resized()
@@ -136,6 +140,21 @@ Segmented::Segmented (juce::AudioProcessorValueTreeState& state, const juce::Str
     setMouseCursor (juce::MouseCursor::PointingHandCursor);
 }
 
+Segmented::Segmented (juce::StringArray labelList)
+    : labels (std::move (labelList))
+{
+    setMouseCursor (juce::MouseCursor::PointingHandCursor);
+}
+
+void Segmented::setSelected (int index)
+{
+    index = juce::jlimit (0, juce::jmax (0, labels.size() - 1), index);
+    if (index == selected) return;
+    selected = index;
+    repaint();
+    if (onChange) onChange (selected);
+}
+
 int Segmented::indexAt (juce::Point<int> p) const
 {
     if (! getLocalBounds().contains (p) || labels.isEmpty()) return -1;
@@ -145,8 +164,53 @@ int Segmented::indexAt (juce::Point<int> p) const
 void Segmented::mouseDown (const juce::MouseEvent& e)
 {
     const int idx = indexAt (e.getPosition());
-    if (idx >= 0 && idx != selected)
-        attachment->setValueAsCompleteGesture ((float) idx);
+    if (idx < 0 || idx == selected) return;
+    if (attachment != nullptr) attachment->setValueAsCompleteGesture ((float) idx);
+    else setSelected (idx);
+}
+
+// ---------------------------------------------------------------------------------
+// Switch
+
+Switch::Switch (juce::AudioProcessorValueTreeState& state, const juce::String& paramId)
+{
+    auto* param = state.getParameter (paramId);
+    jassert (param != nullptr);
+    attachment = std::make_unique<juce::ParameterAttachment> (*param, [this] (float v)
+    {
+        const bool now = v >= 0.5f;
+        if (now != on)
+        {
+            on = now;
+            repaint();
+            if (onChange) onChange (on);
+        }
+    });
+    attachment->sendInitialUpdate();
+    setMouseCursor (juce::MouseCursor::PointingHandCursor);
+}
+
+void Switch::mouseDown (const juce::MouseEvent&)
+{
+    attachment->setValueAsCompleteGesture (on ? 0.0f : 1.0f);
+}
+
+void Switch::paint (juce::Graphics& g)
+{
+    const auto r = getLocalBounds().toFloat().reduced (1.0f);
+    const float radius = r.getHeight() * 0.5f;
+    if (on)
+        g.setGradientFill (juce::ColourGradient (Palette::accent, r.getTopLeft(), Palette::accentDeep, r.getBottomRight(), false));
+    else
+        g.setColour (Palette::background);
+    g.fillRoundedRectangle (r, radius);
+    g.setColour (on ? Palette::accent : Palette::outline);
+    g.drawRoundedRectangle (r, radius, 1.0f);
+
+    const float d = r.getHeight() - 6.0f;
+    const float x = on ? r.getRight() - 3.0f - d : r.getX() + 3.0f;
+    g.setColour (on ? Palette::background : Palette::textDim);
+    g.fillEllipse (x, r.getY() + 3.0f, d, d);
 }
 
 void Segmented::mouseMove (const juce::MouseEvent& e)

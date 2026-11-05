@@ -375,6 +375,111 @@ static void testProgramChange()
     CHECK (rig.synth.presetChangedByMidi.load());
 }
 
+
+static void testSnesEcho()
+{
+    std::printf ("SNES echo: delay = EDL x 16 ms, feedback repeats, EDL latches at wrap\n");
+    SnesEcho echo;
+    echo.prepare (48000.0);
+    echo.setRate (32000.0);
+    EffectParams p; p.snesEcho = true; p.snesDelay = 5; p.snesFeedback = 0; p.snesVolume = 127; p.snesFilter = 0;
+
+    const int n = 32000;
+    std::vector<float> l ((size_t) n, 0.0f), r ((size_t) n, 0.0f);
+    l[0] = r[0] = 0.5f;
+    echo.process (l.data(), r.data(), n, p);
+
+    // 80 ms at 32 kHz, plus 7 samples: FIR0 (the only tap in the flat preset)
+    // applies to the oldest of the 8 history samples, exactly as on the S-DSP.
+    const size_t delay = 5 * 512 + 7;
+    CHECK (peak (l, 1, delay) == 0.0f);
+    CHECK (std::fabs (l[delay] - 0.5f) < 0.02f);            // flat FIR, EVOL 127: ~unity
+    CHECK (peak (l, delay + 1, n) == 0.0f);                 // no feedback: exactly one repeat
+
+    SnesEcho fb;
+    fb.prepare (48000.0);
+    fb.setRate (32000.0);
+    p.snesFeedback = 64;
+    std::vector<float> a ((size_t) n, 0.0f), b ((size_t) n, 0.0f);
+    a[0] = b[0] = 0.5f;
+    fb.process (a.data(), b.data(), n, p);
+    CHECK (std::fabs (a[delay * 2] - 0.25f) < 0.02f);   // each pass adds the 7-sample FIR delay       // EFB 64 = half each repeat
+    CHECK (std::fabs (a[delay * 3] - 0.125f) < 0.02f);
+
+    // Negative feedback flips the polarity of each repeat.
+    SnesEcho neg;
+    neg.prepare (48000.0);
+    neg.setRate (32000.0);
+    p.snesFeedback = -64;
+    std::vector<float> c ((size_t) n, 0.0f), d ((size_t) n, 0.0f);
+    c[0] = d[0] = 0.5f;
+    neg.process (c.data(), d.data(), n, p);
+    CHECK (c[delay * 2] < -0.2f);
+
+    // Time scales with the engine rate.
+    SnesEcho fast;
+    fast.prepare (48000.0);
+    fast.setRate (48000.0);
+    p.snesFeedback = 0;
+    std::vector<float> e ((size_t) n, 0.0f), f ((size_t) n, 0.0f);
+    e[0] = f[0] = 0.5f;
+    fast.process (e.data(), f.data(), n, p);
+    CHECK (std::fabs (e[3840 + 7] - 0.5f) < 0.02f);         // 80 ms at 48 kHz
+}
+
+static void testPs1Reverb()
+{
+    std::printf ("PS1 reverb: every preset produces a bounded, decaying tail\n");
+    for (int preset = 0; preset < numPs1ReverbPresets; ++preset)
+    {
+        Ps1Reverb rev;
+        rev.prepare (48000.0);
+        rev.setRate (44100.0);
+        EffectParams p; p.ps1Reverb = true; p.ps1Preset = preset; p.ps1Depth = 0.5f;
+
+        const int n = 44100 * 8;
+        std::vector<float> l ((size_t) n, 0.0f), r ((size_t) n, 0.0f);
+        for (int i = 0; i < 441; ++i) l[(size_t) i] = r[(size_t) i] = (i % 40 < 20) ? 0.5f : -0.5f;  // 10 ms burst
+        rev.process (l.data(), r.data(), n, p);
+
+        bool finite = true;
+        for (float x : l) finite &= std::isfinite (x) && std::fabs (x) <= 2.0f;
+        const float tail = peak (l, 4410, 44100);             // 0.1 .. 1 s
+        const float late = peak (l, (size_t) n - 4410, (size_t) n);
+        std::printf ("  %-14s tail %.4f  after 8 s %.5f\n", ps1ReverbPresetName (preset), tail, late);
+        CHECK (finite);
+        CHECK (tail > 0.001f);
+        if (std::string (ps1ReverbPresetName (preset)) != "Chaos Echo")   // "almost infinite" by design
+            CHECK (late < tail);
+    }
+}
+
+static void testEffectsInEngine()
+{
+    std::printf ("effects run in the engine, including with no SoundFont\n");
+    {
+        Synth s;
+        s.prepare (48000.0, 512);
+        EngineParams p; p.fx.snesEcho = true; p.fx.ps1Reverb = true;
+        s.setParams (p);
+        std::vector<float> l (4800), r (4800);
+        s.render (l.data(), r.data(), 4800);
+        CHECK (peak (l, 0, l.size()) == 0.0f);
+    }
+    {
+        EngineParams p; p.console = ConsoleId::Snes; p.cutOnNoteOff = true;
+        p.fx.snesEcho = true; p.fx.snesDelay = 4; p.fx.snesFeedback = 0; p.fx.snesVolume = 100;
+        Rig rig (p);
+        rig.synth.noteOn (69, 127);
+        rig.run (0.03);
+        rig.synth.noteOff (69);
+        auto a = rig.run (0.2);
+        // Dry note is cut, but the echo of it arrives ~64 ms later.
+        CHECK (peak (a, (size_t) (0.01 * rig.rate), (size_t) (0.025 * rig.rate)) == 0.0f);
+        CHECK (peak (a, (size_t) (0.04 * rig.rate), (size_t) (0.09 * rig.rate)) > 0.05f);
+    }
+}
+
 int main()
 {
     testParser();
@@ -387,6 +492,9 @@ int main()
     testExclusiveClass();
     testProgramChange();
     testConsoles();
+    testSnesEcho();
+    testPs1Reverb();
+    testEffectsInEngine();
 
     if (failures == 0) std::printf ("\nAll tests passed.\n");
     else std::printf ("\n%d check(s) failed.\n", failures);

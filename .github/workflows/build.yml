@@ -46,11 +46,11 @@ jobs:
           mkdir -p dist
           cd build/Lotus_artefacts/Release
           if [ "$RUNNER_OS" = "Windows" ]; then
-            7z a "$GITHUB_WORKSPACE/dist/Lotus-${{ matrix.name }}.zip" VST3/Lotus.vst3 Standalone/Lotus.exe
+            7z a "$GITHUB_WORKSPACE/dist/Lotus-${{ matrix.name }}.zip" VST3/Lotus.vst3 CLAP/Lotus.clap Standalone/Lotus.exe
           elif [ "$RUNNER_OS" = "macOS" ]; then
-            zip -qry "$GITHUB_WORKSPACE/dist/Lotus-${{ matrix.name }}.zip" VST3/Lotus.vst3 AU/Lotus.component Standalone/Lotus.app
+            zip -qry "$GITHUB_WORKSPACE/dist/Lotus-${{ matrix.name }}.zip" VST3/Lotus.vst3 CLAP/Lotus.clap AU/Lotus.component Standalone/Lotus.app
           else
-            zip -qry "$GITHUB_WORKSPACE/dist/Lotus-${{ matrix.name }}.zip" VST3/Lotus.vst3 LV2/Lotus.lv2 Standalone/Lotus
+            zip -qry "$GITHUB_WORKSPACE/dist/Lotus-${{ matrix.name }}.zip" VST3/Lotus.vst3 CLAP/Lotus.clap LV2/Lotus.lv2 Standalone/Lotus
           fi
 
       - uses: actions/upload-artifact@v4

@@ -6,6 +6,12 @@ Lotus is built with [JUCE](https://juce.com), which is dual-licensed under the
 AGPLv3 and the commercial JUCE licence. Distributing Lotus binaries requires
 complying with one of those licences.
 
+## clap-juce-extensions / CLAP SDK
+
+The CLAP build uses [clap-juce-extensions](https://github.com/free-audio/clap-juce-extensions)
+(MIT licence) and the [CLAP SDK](https://github.com/free-audio/clap) (MIT licence),
+fetched at build time.
+
 ## ares (SNES S-DSP Gaussian table construction)
 
 `Source/dsp/Consoles.cpp` contains the routine that generates the SNES S-DSP
@@ -31,4 +37,6 @@ OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 
 The PS1 SPU Gaussian interpolation table values are taken from the
 [psx-spx](https://psx-spx.consoledev.net/) hardware documentation
-("Sound Processing Unit (SPU)" → "4-Point Gaussian Interpolation").
+("Sound Processing Unit (SPU)" → "4-Point Gaussian Interpolation"). The PS1
+reverb algorithm, its 39-tap resampling filter and the reverb preset register
+values are from the same document ("SPU Reverb Formula", "SPU Reverb Examples").

@@ -47,6 +47,8 @@ class Segmented final : public juce::Component, public juce::SettableTooltipClie
 {
 public:
     Segmented (juce::AudioProcessorValueTreeState&, const juce::String& paramId, juce::StringArray labels);
+    explicit Segmented (juce::StringArray labels);   // unbound (e.g. page tabs)
+    void setSelected (int index);
     void paint (juce::Graphics&) override;
     void mouseDown (const juce::MouseEvent&) override;
     void mouseMove (const juce::MouseEvent&) override;
@@ -60,6 +62,21 @@ private:
 
     juce::StringArray labels;
     int selected = 0, hovered = -1;
+    std::unique_ptr<juce::ParameterAttachment> attachment;
+};
+
+/** On/off pill switch bound to a bool parameter. */
+class Switch final : public juce::Component, public juce::SettableTooltipClient
+{
+public:
+    Switch (juce::AudioProcessorValueTreeState&, const juce::String& paramId);
+    void paint (juce::Graphics&) override;
+    void mouseDown (const juce::MouseEvent&) override;
+    bool isOn() const { return on; }
+    std::function<void (bool)> onChange;
+
+private:
+    bool on = false;
     std::unique_ptr<juce::ParameterAttachment> attachment;
 };
 

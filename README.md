@@ -8,8 +8,9 @@ A simple, uncluttered SoundFont (`.sf2`) player plugin for making video game mus
 - **An ADSR that actually does what it says.** Release = 0 means the note stops *now*. A 250 ms release lasts 250 ms. No hidden minimum, and no release tail baked into the file that you can't remove.
 - **Cut mode.** One switch makes every note stop the instant its key is released, even if you're using the SoundFont's own envelopes. It works with the sustain pedal too: the cut happens when the pedal comes up.
 - **Console resampling modes.** Play samples back the way the original hardware did: SNES Gaussian, DS sample-and-hold, GBA 8-bit, PS1 Gaussian, plus clean modern modes.
+- **Console effects.** The SNES echo (with its FIR filter) and the PS1 SPU reverb (with Sony's preset rooms) on a separate Effects tab, modelled on the hardware rather than generic delay/reverb.
 
-Formats: **VST3** and **Standalone** on Windows/macOS/Linux, plus **AU** on macOS and **LV2** on Linux.
+Formats: **VST3**, **CLAP** and **Standalone** on Windows/macOS/Linux, plus **AU** on macOS and **LV2** on Linux.
 
 ---
 
@@ -26,6 +27,29 @@ Formats: **VST3** and **Standalone** on Windows/macOS/Linux, plus **AU** on macO
 | **Volume**, **Bend** | Output level, and pitch-bend range in semitones. |
 
 MIDI: notes, velocity, pitch bend, sustain pedal (CC64), volume (CC7), pan (CC10), expression (CC11), bank select (CC0/32), program change, all-notes-off/all-sound-off. Lotus plays every MIDI channel (omni). For several instruments, use several instances.
+
+## Effects tab
+
+![Effects](docs/effects.png)
+
+Both effects take the voice mix as input and add their return to it, as on the hardware. They run as parallel sends, so you can use both at once.
+
+**SNES Echo** is the S-DSP echo unit, using the chip's 16-bit integer maths:
+
+| Control | Register | Range |
+| --- | --- | --- |
+| Delay | EDL | 0-15 × 16 ms (0-240 ms). As on the chip, a new delay takes effect when the echo buffer wraps. |
+| Feedback | EFB | -100% to +99%. Negative values flip the polarity of every other repeat. |
+| Volume | EVOL | 0-99% |
+| Filter | FIR C0-C7 | The four FIR presets from Nintendo's standard SNES sound driver (N-SPC): Flat, Low-pass, High-pass, Band-pass |
+
+Hardware quirks are kept: the 8-tap FIR adds 7 samples of delay (the "Flat" preset's only tap is applied to the oldest sample), the FIR has the chip's 16-bit wrap-around, and feedback saturates and wraps the same way the chip does. With extreme feedback and filter settings the echo can blow up and distort, just like on a real SNES.
+
+**PS1 Reverb** is the SPU reverb unit. It has same-side and cross-side reflections, four comb taps and two all-pass stages, running at 22.05 kHz on a 16-bit work area. The 39-tap half-band filter resamples it in and out. Types are Sony's library presets: Room, Studio Small/Medium/Large, Hall, Half Echo, Space Echo, Chaos Echo and Delay. Depth is the reverb output volume. Like the hardware presets, the reverb input is phase-inverted (vLIN/vRIN = -1).
+
+**Sample-exact only with the matching console.** The effects run at the engine's mixer rate. With Console = SNES (for the echo) or PS1 (for the reverb), they match the hardware sample for sample. With any other console, delay times stay correct, but the filters run at a different sample rate, so their frequency response shifts. The Effects tab tells you when this applies.
+
+Not modelled: per-voice echo/reverb enable (EON). The whole mix is sent, as if every voice had echo on. The SNES master volume and the SPU's other mixer controls aren't modelled either. The DS and GBA have no dedicated effects hardware (games did it in software, differently per game), so there are no DS/GBA effects.
 
 ## Console modes
 
@@ -60,7 +84,9 @@ cmake -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build --config Release --parallel
 ```
 
-Plugins end up in `build/Lotus_artefacts/Release/` (`VST3/Lotus.vst3`, `Standalone/`, `AU/`, `LV2/`).
+Plugins end up in `build/Lotus_artefacts/Release/` (`VST3/Lotus.vst3`, `CLAP/Lotus.clap`, `Standalone/`, `AU/`, `LV2/`).
+
+The CLAP is built with [clap-juce-extensions](https://github.com/free-audio/clap-juce-extensions) (fetched automatically), because JUCE 8 has no native CLAP support. Turn it off with `-DLOTUS_BUILD_CLAP=OFF`, or point at a local checkout with `-DLOTUS_CLAP_JUCE_EXTENSIONS_DIR=...`.
 
 - **Linux** also needs: `libasound2-dev libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxext-dev libxcomposite-dev libfreetype-dev libfontconfig1-dev`.
 - To use a JUCE checkout you already have: `-DLOTUS_JUCE_DIR=/path/to/JUCE`.
@@ -70,11 +96,11 @@ Every push runs a GitHub Actions build that builds Windows, macOS (universal) an
 
 ### Installing
 
-Copy `Lotus.vst3` to:
+Copy `Lotus.vst3` / `Lotus.clap` to:
 
-- Windows: `C:\Program Files\Common Files\VST3\`
-- macOS: `~/Library/Audio/Plug-Ins/VST3/` (AU: `~/Library/Audio/Plug-Ins/Components/`)
-- Linux: `~/.vst3/` (LV2: `~/.lv2/`)
+- Windows: `C:\Program Files\Common Files\VST3\` and `C:\Program Files\Common Files\CLAP\`
+- macOS: `~/Library/Audio/Plug-Ins/VST3/` and `~/Library/Audio/Plug-Ins/CLAP/` (AU: `~/Library/Audio/Plug-Ins/Components/`)
+- Linux: `~/.vst3/` and `~/.clap/` (LV2: `~/.lv2/`)
 
 macOS builds from CI are unsigned. If macOS refuses to load them, run `xattr -dr com.apple.quarantine` on the plugin.
 

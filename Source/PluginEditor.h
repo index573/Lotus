@@ -78,6 +78,27 @@ private:
     lotus::ui::Card outputCard;
     lotus::ui::Knob volumeKnob, bendKnob;
 
+    // Effects page
+    lotus::ui::Segmented pageTabs { juce::StringArray { "Sound", "Effects" } };
+
+    lotus::ui::Card snesCard { "SNES Echo" };
+    lotus::ui::Switch snesSwitch;
+    juce::Label snesDesc, snesFilterLabel, snesHint;
+    lotus::ui::Segmented snesFilter;
+    lotus::ui::Knob snesDelayKnob, snesFeedbackKnob, snesVolumeKnob;
+
+    lotus::ui::Card ps1Card { "PS1 Reverb" };
+    lotus::ui::Switch ps1Switch;
+    juce::Label ps1Desc, ps1TypeLabel, ps1Hint;
+    juce::ComboBox ps1PresetBox;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment> ps1PresetAttachment;
+    lotus::ui::Knob ps1DepthKnob;
+
+    std::vector<juce::Component*> soundPage, effectsPage;
+    void showPage (int page);
+    void updateEffectHints();
+    int seenConsole = -1;
+
     std::unique_ptr<juce::FileChooser> chooser;
     int seenGeneration = -1;
     int seenPreset = -1;

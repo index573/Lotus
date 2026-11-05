@@ -68,10 +68,12 @@ void LotusLookAndFeel::drawRotarySlider (juce::Graphics& g, int x, int y, int w,
     g.strokePath (bg, PathStrokeType (track, PathStrokeType::curved, PathStrokeType::rounded));
 
     // Value
-    if (pos > 0.001f)
+    const bool bipolar = s.getProperties().contains ("bipolar");
+    const float zeroAngle = bipolar ? startAngle + (float) s.valueToProportionOfLength (0.0) * (endAngle - startAngle) : startAngle;
+    if (std::abs (angle - zeroAngle) > 0.001f)
     {
         Path arc;
-        arc.addCentredArc (centre.x, centre.y, arcRadius, arcRadius, 0.0f, startAngle, angle, true);
+        arc.addCentredArc (centre.x, centre.y, arcRadius, arcRadius, 0.0f, jmin (zeroAngle, angle), jmax (zeroAngle, angle), true);
         g.setGradientFill (ColourGradient (accent.withAlpha (0.65f), centre.x - radius, centre.y + radius,
                                            accent, centre.x + radius, centre.y - radius, false));
         g.strokePath (arc, PathStrokeType (track, PathStrokeType::curved, PathStrokeType::rounded));

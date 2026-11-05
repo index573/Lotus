@@ -71,6 +71,46 @@ juce::AudioProcessorValueTreeState::ParameterLayout LotusProcessor::createLayout
         juce::ParameterID { ParamIDs::bendRange, 1 }, "Bend Range", 0, 24, 2,
         juce::AudioParameterIntAttributes().withStringFromValueFunction ([] (int v, int) { return juce::String (v) + " st"; })));
 
+    // --- Console effects --------------------------------------------------------
+    layout.add (std::make_unique<juce::AudioParameterBool> (juce::ParameterID { ParamIDs::snesOn, 1 }, "SNES Echo", false));
+    layout.add (std::make_unique<juce::AudioParameterInt> (
+        juce::ParameterID { ParamIDs::snesDelay, 1 }, "SNES Echo Delay", 0, 15, 5,
+        juce::AudioParameterIntAttributes().withStringFromValueFunction ([] (int v, int)
+        {
+            return v == 0 ? juce::String ("0 ms") : juce::String (v * 16) + " ms";
+        })));
+    layout.add (std::make_unique<juce::AudioParameterInt> (
+        juce::ParameterID { ParamIDs::snesFeedback, 1 }, "SNES Echo Feedback", -128, 127, 64,
+        juce::AudioParameterIntAttributes().withStringFromValueFunction ([] (int v, int)
+        {
+            return juce::String (juce::roundToInt (v * 100.0f / 128.0f)) + "%";
+        })));
+    layout.add (std::make_unique<juce::AudioParameterInt> (
+        juce::ParameterID { ParamIDs::snesVolume, 1 }, "SNES Echo Volume", 0, 127, 48,
+        juce::AudioParameterIntAttributes().withStringFromValueFunction ([] (int v, int)
+        {
+            return juce::String (juce::roundToInt (v * 100.0f / 128.0f)) + "%";
+        })));
+    {
+        juce::StringArray firs;
+        for (int i = 0; i < lotus::numSnesFirPresets; ++i) firs.add (lotus::snesFirPresetName (i));
+        layout.add (std::make_unique<juce::AudioParameterChoice> (
+            juce::ParameterID { ParamIDs::snesFilter, 1 }, "SNES Echo Filter", firs, 0));
+    }
+
+    layout.add (std::make_unique<juce::AudioParameterBool> (juce::ParameterID { ParamIDs::ps1On, 1 }, "PS1 Reverb", false));
+    {
+        juce::StringArray presets;
+        for (int i = 0; i < lotus::numPs1ReverbPresets; ++i) presets.add (lotus::ps1ReverbPresetName (i));
+        layout.add (std::make_unique<juce::AudioParameterChoice> (
+            juce::ParameterID { ParamIDs::ps1Preset, 1 }, "PS1 Reverb Type", presets, 2));   // Studio Medium
+    }
+    layout.add (std::make_unique<juce::AudioParameterFloat> (
+        juce::ParameterID { ParamIDs::ps1Depth, 1 }, "PS1 Reverb Depth", juce::NormalisableRange<float> (0.0f, 100.0f, 1.0f), 50.0f,
+        juce::AudioParameterFloatAttributes()
+            .withStringFromValueFunction ([] (float v, int) { return juce::String (juce::roundToInt (v)) + "%"; })
+            .withValueFromStringFunction ([] (const juce::String& t) { return t.getFloatValue(); })));
+
     return layout;
 }
 
@@ -87,6 +127,20 @@ LotusProcessor::LotusProcessor()
     pConsole   = params.getRawParameterValue (ParamIDs::console);
     pVolume    = params.getRawParameterValue (ParamIDs::volume);
     pBendRange = params.getRawParameterValue (ParamIDs::bendRange);
+    pSnesOn       = params.getRawParameterValue (ParamIDs::snesOn);
+    pSnesDelay    = params.getRawParameterValue (ParamIDs::snesDelay);
+    pSnesFeedback = params.getRawParameterValue (ParamIDs::snesFeedback);
+    pSnesVolume   = params.getRawParameterValue (ParamIDs::snesVolume);
+    pSnesFilter   = params.getRawParameterValue (ParamIDs::snesFilter);
+    pPs1On        = params.getRawParameterValue (ParamIDs::ps1On);
+    pPs1Preset    = params.getRawParameterValue (ParamIDs::ps1Preset);
+    pPs1Depth     = params.getRawParameterValue (ParamIDs::ps1Depth);
+}
+
+double LotusProcessor::getTailLengthSeconds() const
+{
+    // Long enough for the slowest echo/reverb settings to die away.
+    return (pSnesOn->load() > 0.5f || pPs1On->load() > 0.5f) ? 10.0 : 0.0;
 }
 
 bool LotusProcessor::isBusesLayoutSupported (const BusesLayout& layouts) const
@@ -125,6 +179,14 @@ void LotusProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiB
     const float db = pVolume->load();
     p.masterGain = db <= -60.0f ? 0.0f : juce::Decibels::decibelsToGain (db);
     p.bendRange = (int) pBendRange->load();
+    p.fx.snesEcho     = pSnesOn->load() > 0.5f;
+    p.fx.snesDelay    = (int) pSnesDelay->load();
+    p.fx.snesFeedback = (int) pSnesFeedback->load();
+    p.fx.snesVolume   = (int) pSnesVolume->load();
+    p.fx.snesFilter   = (int) pSnesFilter->load();
+    p.fx.ps1Reverb    = pPs1On->load() > 0.5f;
+    p.fx.ps1Preset    = (int) pPs1Preset->load();
+    p.fx.ps1Depth     = pPs1Depth->load() / 100.0f;
     synth.setParams (p);
 
     // Stereo: render straight into the host buffer. Mono: render the right side into

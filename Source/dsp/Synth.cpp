@@ -40,6 +40,13 @@ void Synth::prepare (double hostSampleRate, int maxBlockSize)
     const size_t cap = (size_t) std::ceil (maxBlock * (fastest / hostRate)) + 16;
     engineL.assign (cap, 0.0f);
     engineR.assign (cap, 0.0f);
+    for (auto* b : { &engineDryL, &engineDryR, &engineWetL, &engineWetR })
+        b->assign (cap, 0.0f);
+
+    // Effect buffers sized for the fastest possible engine rate, so console
+    // switches never allocate on the audio thread.
+    snesEcho.prepare (std::max (hostRate, 44100.0));
+    ps1Reverb.prepare (std::max (hostRate, 44100.0));
 
     allSoundOff();
     configureConsole();
@@ -52,6 +59,8 @@ void Synth::configureConsole()
     passthrough = profile->engineRate <= 0;
     engineStep = engineRate / hostRate;
     enginePhase = 0.0;
+    snesEcho.setRate (engineRate);
+    ps1Reverb.setRate (engineRate);
     std::fill (std::begin (histL), std::end (histL), 0.0f);
     std::fill (std::begin (histR), std::end (histR), 0.0f);
 }
@@ -396,7 +405,8 @@ void Synth::renderEngine (float* outL, float* outR, int n)
 {
     std::fill (outL, outL + n, 0.0f);
     std::fill (outR, outR + n, 0.0f);
-    if (soundFont == nullptr || n <= 0) return;
+    if (n <= 0) return;
+    if (soundFont == nullptr) { applyEffectsAndOutputStage (outL, outR, n); return; }
 
     const float channelGain = params.masterGain * ccVolume * ccExpression;
     int count = 0;
@@ -426,6 +436,39 @@ void Synth::renderEngine (float* outL, float* outR, int n)
     }
 
     activeVoices.store (count, std::memory_order_relaxed);
+    applyEffectsAndOutputStage (outL, outR, n);
+}
+
+void Synth::applyEffectsAndOutputStage (float* outL, float* outR, int n)
+{
+    // Console effects are fed from the voice mix and added back to it, as on the
+    // hardware (where echo/reverb returns are summed with the dry voices).
+    if (params.fx.snesEcho || params.fx.ps1Reverb)
+    {
+        // Run both from the same dry signal, then sum, so they're parallel sends.
+        float* dryL = engineDryL.data();
+        float* dryR = engineDryR.data();
+        std::copy (outL, outL + n, dryL);
+        std::copy (outR, outR + n, dryR);
+
+        if (params.fx.snesEcho)
+        {
+            if (! echoWasOn) snesEcho.reset();
+            snesEcho.process (outL, outR, n, params.fx);
+        }
+        if (params.fx.ps1Reverb)
+        {
+            if (! reverbWasOn) ps1Reverb.reset();
+            float* wetL = engineWetL.data();
+            float* wetR = engineWetR.data();
+            std::copy (dryL, dryL + n, wetL);
+            std::copy (dryR, dryR + n, wetR);
+            ps1Reverb.process (wetL, wetR, n, params.fx);
+            for (int i = 0; i < n; ++i) { outL[i] += wetL[i] - dryL[i]; outR[i] += wetR[i] - dryR[i]; }
+        }
+    }
+    echoWasOn = params.fx.snesEcho;
+    reverbWasOn = params.fx.ps1Reverb;
 
     // Hardware output stage: fixed bit depth with hard clipping.
     if (profile->outputBits > 0)

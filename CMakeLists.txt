@@ -11,6 +11,7 @@ set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 
 option(LOTUS_BUILD_PLUGIN "Build the plugin (requires JUCE)" ON)
 option(LOTUS_BUILD_TESTS  "Build the headless engine tests" ON)
+option(LOTUS_BUILD_CLAP   "Also build a CLAP plugin (via clap-juce-extensions)" ON)
 
 # -----------------------------------------------------------------------------
 # Engine (framework-free, shared by the plugin and the tests)
@@ -18,7 +19,8 @@ option(LOTUS_BUILD_TESTS  "Build the headless engine tests" ON)
 add_library(lotus_engine STATIC
     Source/dsp/SoundFont.cpp
     Source/dsp/Consoles.cpp
-    Source/dsp/Synth.cpp)
+    Source/dsp/Synth.cpp
+    Source/dsp/Effects.cpp)
 target_include_directories(lotus_engine PUBLIC Source)
 set_target_properties(lotus_engine PROPERTIES POSITION_INDEPENDENT_CODE ON)
 if(MSVC)
@@ -38,12 +40,12 @@ endif()
 # Plugin
 
 if(LOTUS_BUILD_PLUGIN)
+    include(FetchContent)
     # Use a local JUCE checkout with -DLOTUS_JUCE_DIR=/path/to/JUCE, otherwise fetch it.
     set(LOTUS_JUCE_DIR "" CACHE PATH "Path to a local JUCE checkout (optional)")
     if(LOTUS_JUCE_DIR)
         add_subdirectory(${LOTUS_JUCE_DIR} ${CMAKE_BINARY_DIR}/JUCE EXCLUDE_FROM_ALL)
     else()
-        include(FetchContent)
         FetchContent_Declare(JUCE
             GIT_REPOSITORY https://github.com/juce-framework/JUCE.git
             GIT_TAG 8.0.4
@@ -97,4 +99,24 @@ if(LOTUS_BUILD_PLUGIN)
             juce::juce_recommended_config_flags
             juce::juce_recommended_lto_flags
             juce::juce_recommended_warning_flags)
+
+    # --- CLAP ---------------------------------------------------------------
+    # JUCE 8 has no native CLAP support; clap-juce-extensions wraps the same
+    # processor/editor as a .clap.
+    if(LOTUS_BUILD_CLAP)
+        set(LOTUS_CLAP_JUCE_EXTENSIONS_DIR "" CACHE PATH "Path to a local clap-juce-extensions checkout (optional)")
+        if(LOTUS_CLAP_JUCE_EXTENSIONS_DIR)
+            add_subdirectory(${LOTUS_CLAP_JUCE_EXTENSIONS_DIR} ${CMAKE_BINARY_DIR}/clap-juce-extensions EXCLUDE_FROM_ALL)
+        else()
+            FetchContent_Declare(clap-juce-extensions
+                GIT_REPOSITORY https://github.com/free-audio/clap-juce-extensions.git
+                GIT_TAG 7adee3a1bd4684d4caa5601100e364abccff4b4d
+                GIT_SUBMODULES_RECURSE TRUE)
+            FetchContent_MakeAvailable(clap-juce-extensions)
+        endif()
+
+        clap_juce_extensions_plugin(TARGET Lotus
+            CLAP_ID "com.lotus.lotus"
+            CLAP_FEATURES instrument sampler synthesizer stereo)
+    endif()
 endif()
