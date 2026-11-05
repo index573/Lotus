@@ -80,6 +80,43 @@ private:
     std::unique_ptr<juce::ParameterAttachment> attachment;
 };
 
+/** Small rounded toggle with changeable text, bound to a bool parameter. */
+class Chip final : public juce::Component, public juce::SettableTooltipClient
+{
+public:
+    Chip (juce::AudioProcessorValueTreeState&, const juce::String& paramId);
+    void setText (const juce::String& t) { if (t != text) { text = t; repaint(); } }
+    void paint (juce::Graphics&) override;
+    void mouseDown (const juce::MouseEvent&) override;
+    void mouseEnter (const juce::MouseEvent&) override { repaint(); }
+    void mouseExit (const juce::MouseEvent&) override { repaint(); }
+    void enablementChanged() override { repaint(); }
+    bool isOn() const { return on; }
+
+private:
+    juce::String text;
+    bool on = false;
+    std::unique_ptr<juce::ParameterAttachment> attachment;
+};
+
+/** One row in the effects list: name, a status dot, and selection highlight. */
+class EffectRow final : public juce::Component
+{
+public:
+    EffectRow (juce::String name, juce::String console);
+    void setSelected (bool s) { if (s != selected) { selected = s; repaint(); } }
+    void setActive (bool a) { if (a != active) { active = a; repaint(); } }
+    void paint (juce::Graphics&) override;
+    void mouseDown (const juce::MouseEvent&) override { if (onClick) onClick(); }
+    void mouseEnter (const juce::MouseEvent&) override { repaint(); }
+    void mouseExit (const juce::MouseEvent&) override { repaint(); }
+    std::function<void()> onClick;
+
+private:
+    juce::String name, console;
+    bool selected = false, active = false;
+};
+
 /** Live drawing of the envelope that will actually be applied. */
 class EnvelopeView final : public juce::Component
 {

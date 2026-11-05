@@ -4,10 +4,12 @@
 // parser and the behaviours Lotus promises: notes that really stop, ADSR times
 // that mean what they say, and console modes that render sensibly.
 
+#include "../Source/dsp/Codecs.h"
 #include "../Source/dsp/Synth.h"
 
 #include <cmath>
 #include <cstdio>
+#include <atomic>
 #include <cstring>
 #include <string>
 #include <vector>
@@ -334,17 +336,39 @@ static void testConsoles()
         }
     }
 
-    // SNES pitch ceiling: 0x3FFF ~= 4x at 32 kHz. Key 69+36 on a 44.1 kHz sample needs
-    // ratio 11.0 - so it should clamp to (0x3FFF/4096)*32000 Hz playback.
+    // SNES pitch ceiling: 0x3FFF ~= 4x the root pitch. Three octaves up must clamp to that.
     {
         EngineParams p; p.console = ConsoleId::Snes;
         Rig rig (p, 48000.0);
         rig.synth.noteOn (69 + 36, 127);
         auto a = rig.run (0.5);
         std::vector<float> tail (a.begin() + 4800, a.end());
-        const double expected = (0x3FFF / 4096.0) * 32000.0 / 100.0;   // samples/s / period
+        const double expected = 441.0 * 0x3FFF / 4096.0;
         const double f = zeroCrossFreq (tail, 48000.0);
         CHECK (std::fabs (f - expected) < expected * 0.02);
+    }
+
+    // N64: at most one octave above the root.
+    {
+        EngineParams p; p.console = ConsoleId::N64;
+        Rig rig (p, 48000.0);
+        rig.synth.noteOn (69 + 24, 127);
+        auto a = rig.run (0.5);
+        std::vector<float> tail (a.begin() + 4800, a.end());
+        const double f = zeroCrossFreq (tail, 48000.0);
+        CHECK (std::fabs (f - 882.0) < 882.0 * 0.02);
+    }
+
+    // NES: notes snap to the 16 DMC rates. A semitone up from the root can't go higher
+    // than the fastest rate, so it stays at the root pitch.
+    {
+        EngineParams p; p.console = ConsoleId::Nes;
+        Rig rig (p, 48000.0);
+        rig.synth.noteOn (70, 127);
+        auto a = rig.run (0.5);
+        std::vector<float> tail (a.begin() + 4800, a.end());
+        const double f = zeroCrossFreq (tail, 48000.0);
+        CHECK (std::fabs (f - 441.0) < 441.0 * 0.02);
     }
 }
 
@@ -480,6 +504,160 @@ static void testEffectsInEngine()
     }
 }
 
+static double snrDb (const std::vector<int16_t>& ref, const std::vector<int16_t>& test)
+{
+    double sig = 0, err = 0;
+    for (size_t i = 0; i < ref.size(); ++i)
+    {
+        sig += (double) ref[i] * ref[i];
+        err += (double) (ref[i] - test[i]) * (ref[i] - test[i]);
+    }
+    return 10.0 * std::log10 (sig / std::max (err, 1.0));
+}
+
+static void testCodecs()
+{
+    std::printf ("native sample formats: decode close to the source, with each format's character\n");
+    std::vector<int16_t> sine (44100);
+    for (size_t i = 0; i < sine.size(); ++i)
+        sine[i] = (int16_t) (12000.0 * std::sin (2.0 * 3.14159265358979 * 440.0 * (double) i / 44100.0));
+
+    struct C { Codec c; double minSnr, maxSnr; };
+    for (auto [codec, lo, hi] : { C { Codec::Brr, 20.0, 80.0 }, C { Codec::PsAdpcm, 20.0, 80.0 },
+                                  C { Codec::ImaAdpcm, 15.0, 80.0 }, C { Codec::Dpcm, 0.0, 30.0 } })
+    {
+        const auto out = applyCodec (sine, codec);
+        CHECK (out.size() == sine.size());
+        const double snr = snrDb (sine, out);
+        std::printf ("  %-10s SNR %.1f dB\n", codecName (codec), snr);
+        CHECK (snr > lo && snr < hi);   // lossy, but recognisably the same signal
+    }
+
+    // DPCM can only move 2 steps of 128 per sample: a full-scale jump takes ~64 samples.
+    std::vector<int16_t> step (200, 0);
+    for (size_t i = 100; i < step.size(); ++i) step[i] = 30000;
+    const auto d = applyCodec (step, Codec::Dpcm);
+    CHECK (d[105] < 10000);
+    CHECK (d[199] > 25000);
+
+    std::atomic<bool> cancel { true };
+    std::vector<int16_t> big (1 << 21, 0);
+    CHECK (applyCodec (big, Codec::Brr, &cancel).empty());
+}
+
+static void testNativeFormatInEngine()
+{
+    std::printf ("engine plays the coded pool only when the format is enabled and matches\n");
+    EngineParams p; p.console = ConsoleId::Snes;
+    Rig rig (p);
+    std::vector<int16_t> silent (rig.sf->samples.size(), 0);
+    rig.synth.setCodedPool (&silent, Codec::Brr);
+    rig.synth.noteOn (69, 127);
+    CHECK (peak (rig.run (0.1), 0, 4800) > 0.1f);   // nativeFormat off: original samples
+
+    p.nativeFormat = true;
+    rig.synth.setParams (p);
+    rig.synth.noteOn (69, 127);
+    auto a = rig.run (0.1);
+    CHECK (peak (a, 2400, a.size()) == 0.0f);         // now the (silent) coded pool
+
+    rig.synth.setCodedPool (&silent, Codec::PsAdpcm); // wrong codec for SNES: ignored
+    rig.synth.noteOn (69, 127);
+    CHECK (peak (rig.run (0.1), 0, 4800) > 0.1f);
+}
+
+static void testN64Reverb()
+{
+    std::printf ("N64 reverb: every preset produces a bounded tail that dies away\n");
+    for (int preset = 0; preset < numN64FxPresets; ++preset)
+    {
+        N64Reverb rev;
+        rev.prepare (48000.0);
+        rev.setRate (32000.0);
+        EffectParams p; p.n64Reverb = true; p.n64Preset = preset; p.n64Mix = 1.0f;
+        const int n = 32000 * 6;
+        std::vector<float> l ((size_t) n, 0.0f), r ((size_t) n, 0.0f);
+        for (int i = 0; i < 320; ++i) l[(size_t) i] = r[(size_t) i] = (i % 32 < 16) ? 0.5f : -0.5f;
+        rev.process (l.data(), r.data(), n, p);
+
+        bool finite = true;
+        for (float x : l) finite &= std::isfinite (x) && std::fabs (x) <= 2.0f;
+        const float tail = peak (l, 400, 32000);
+        const float late = peak (l, (size_t) n - 3200, (size_t) n);
+        std::printf ("  %-10s tail %.4f  after 6 s %.5f\n", n64FxPresetName (preset), tail, late);
+        CHECK (finite);
+        CHECK (tail > 0.001f);
+        CHECK (late < tail * 0.05f);
+    }
+
+    // Echo: the first repeat lands at 179 "ms" = 7160 samples.
+    N64Reverb echo;
+    echo.prepare (48000.0);
+    echo.setRate (32000.0);
+    EffectParams p; p.n64Reverb = true; p.n64Preset = 2; p.n64Mix = 1.0f;
+    std::vector<float> l (16000, 0.0f), r (16000, 0.0f);
+    l[0] = r[0] = 0.5f;
+    echo.process (l.data(), r.data(), 16000, p);
+    CHECK (peak (l, 1, 7150) == 0.0f);
+    CHECK (peak (l, 7155, 7170) > 0.2f);
+}
+
+static void testVoiceLimitAndGlide()
+{
+    std::printf ("hardware voice limit and glide\n");
+    {
+        EngineParams p; p.console = ConsoleId::Snes; p.hardwareVoices = true;
+        Rig rig (p);
+        for (int k = 0; k < 12; ++k) rig.synth.noteOn (48 + k, 100);
+        rig.run (0.05);
+        CHECK (rig.synth.getActiveVoiceCount() == 8);
+
+        p.hardwareVoices = false;
+        rig.synth.setParams (p);
+        for (int k = 0; k < 12; ++k) rig.synth.noteOn (60 + k, 100);
+        rig.run (0.05);
+        CHECK (rig.synth.getActiveVoiceCount() > 8);
+    }
+    {
+        EngineParams p; p.glide = 0.2f; p.cutOnNoteOff = true;
+        Rig rig (p, 48000.0);
+        rig.synth.noteOn (57, 127);
+        rig.run (0.1);
+        rig.synth.noteOff (57);
+        rig.synth.noteOn (69, 127);                      // glide up an octave over 200 ms
+        auto a = rig.run (0.5);
+        std::vector<float> early (a.begin(), a.begin() + 2400), late (a.begin() + 14400, a.end());
+        const double fEarly = zeroCrossFreq (early, 48000.0), fLate = zeroCrossFreq (late, 48000.0);
+        CHECK (fEarly < 300.0);
+        CHECK (std::fabs (fLate - 441.0) < 441.0 * 0.02);
+    }
+}
+
+static void testAnalogStage()
+{
+    std::printf ("analogue output: Amiga LED filter, Mega Drive ladder\n");
+    AnalogStage a;
+    a.configure (48000.0, 0.0f, 0.0f, 0.0f);
+    auto rms = [] (const std::vector<float>& x)
+    {
+        double s = 0; for (size_t i = 2400; i < x.size(); ++i) s += x[i] * x[i];
+        return std::sqrt (s / (double) (x.size() - 2400));
+    };
+    std::vector<float> l (9600), r (9600);
+    for (size_t i = 0; i < l.size(); ++i) l[i] = r[i] = (float) std::sin (2.0 * 3.14159265358979 * 10000.0 * (double) i / 48000.0);
+    auto off = l;
+    a.process (l.data(), r.data(), (int) l.size(), true);
+    CHECK (rms (l) < rms (off) * 0.2);                // 10 kHz is well past the 3.1 kHz LED corner
+
+    EngineParams p; p.console = ConsoleId::MegaDrive;
+    Rig rig (p, 48000.0);
+    rig.synth.noteOn (69, 127);
+    auto x = rig.run (0.3);
+    float minNeg = 0.0f;
+    for (float v : x) minNeg = std::min (minNeg, v);
+    CHECK (minNeg < -0.3f);
+}
+
 int main()
 {
     testParser();
@@ -495,6 +673,11 @@ int main()
     testSnesEcho();
     testPs1Reverb();
     testEffectsInEngine();
+    testCodecs();
+    testNativeFormatInEngine();
+    testN64Reverb();
+    testVoiceLimitAndGlide();
+    testAnalogStage();
 
     if (failures == 0) std::printf ("\nAll tests passed.\n");
     else std::printf ("\n%d check(s) failed.\n", failures);

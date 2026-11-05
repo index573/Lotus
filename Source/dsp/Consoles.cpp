@@ -5,32 +5,44 @@
 namespace lotus
 {
 
+const int nesDmcPeriods[16] = { 428, 380, 340, 320, 286, 254, 226, 214, 190, 160, 142, 128, 106, 84, 72, 54 };
+
 const ConsoleProfile& getConsoleProfile (ConsoleId id)
 {
-    // Note on rates:
-    //  - SNES S-DSP runs at 32000 Hz; pitch is a 14-bit 4.12 value (max 0x3FFF, ~2 octaves up).
-    //  - DS mixer: 33.513982 MHz / 1024 = ~32728.5 Hz, 10-bit output, no interpolation.
-    //    Channel rates come from a 16-bit timer: rate = 16756991 / timer.
-    //  - GBA: there is no hardware sample engine; most games used Nintendo's
-    //    "m4a"/MusicPlayer2000 software mixer. 13379 Hz is its most common mixing
-    //    rate; samples are signed 8-bit and the DirectSound FIFO is 8-bit.
-    //  - PS1 SPU runs at 44100 Hz with 4.12 pitch (steps above 0x3FFF clip to 0x4000).
     static const ConsoleProfile profiles[] =
     {
-        { "Modern",      "Clean 4-point Hermite interpolation at the host sample rate.",
-          0.0,      Interp::Hermite,   PitchMode::Free,      0,      0,  0 },
-        { "Linear",      "Linear interpolation at the host sample rate (typical of many software samplers).",
-          0.0,      Interp::Linear,    PitchMode::Free,      0,      0,  0 },
-        { "Raw",         "No interpolation at all, at the host sample rate. Crunchy and aliased.",
-          0.0,      Interp::Nearest,   PitchMode::Free,      0,      0,  0 },
-        { "SNES",        "S-DSP: 32 kHz mixer, 4-tap Gaussian interpolation, 4.12 fixed-point pitch.",
-          32000.0,  Interp::SnesGauss, PitchMode::Fixed4p12, 0x3FFF, 16, 16 },
-        { "Nintendo DS", "DS mixer: ~32.73 kHz, no interpolation, timer-quantised pitch, 10-bit output.",
-          33513982.0 / 1024.0, Interp::Nearest, PitchMode::DsTimer, 0, 16, 10 },
-        { "GBA",         "m4a-style software mixer: 13.38 kHz, 8-bit samples and output, linear interpolation.",
-          13379.0,  Interp::Linear,    PitchMode::Free,      0,      8,  8 },
-        { "PS1",         "SPU: 44.1 kHz mixer, 4-tap Gaussian interpolation, 4.12 fixed-point pitch.",
-          44100.0,  Interp::Ps1Gauss,  PitchMode::Fixed4p12, 0x4000, 16, 16 },
+        { "Modern", "Clean 4-point Hermite interpolation at the project rate.", "Clean",
+          0.0, Interp::Hermite, PitchMode::Free, 0, 0, 0, Codec::None, 0, false, 0.0f, { 0.0f, 0.0f }, false },
+        { "Linear", "Linear interpolation at the project rate.", "Clean",
+          0.0, Interp::Linear, PitchMode::Free, 0, 0, 0, Codec::None, 0, false, 0.0f, { 0.0f, 0.0f }, false },
+        { "Raw", "No interpolation at the project rate. Crunchy and aliased.", "Clean",
+          0.0, Interp::Nearest, PitchMode::Free, 0, 0, 0, Codec::None, 0, false, 0.0f, { 0.0f, 0.0f }, false },
+
+        { "NES", "DMC: 16 fixed rates, so notes snap and detune. 7-bit output, APU filters.", "Nintendo",
+          0.0, Interp::Nearest, PitchMode::NesDmc, 0, 0, 7, Codec::Dpcm, 1, false, 14000.0f, { 90.0f, 440.0f }, false },
+        { "SNES", "S-DSP: 32 kHz, 4-tap Gaussian interpolation, 4.12 pitch.", "Nintendo",
+          32000.0, Interp::SnesGauss, PitchMode::Fixed4p12, 0x3FFF, 16, 16, Codec::Brr, 8, false, 0.0f, { 0.0f, 0.0f }, false },
+        { "N64", "RSP: 32 kHz, 4-tap polyphase resampler, one octave of headroom.", "Nintendo",
+          32000.0, Interp::N64Poly, PitchMode::N64Q15, 0, 16, 16, Codec::None, 0, false, 0.0f, { 0.0f, 0.0f }, false },
+        { "GBA", "m4a-style mixer: 13.38 kHz, linear, 8-bit output, held DAC.", "Nintendo",
+          13379.0, Interp::Linear, PitchMode::Free, 0, 8, 8, Codec::None, 12, true, 0.0f, { 0.0f, 0.0f }, false },
+        { "Nintendo DS", "32.73 kHz, no interpolation, timer pitch, 10-bit output.", "Nintendo",
+          33513982.0 / 1024.0, Interp::Nearest, PitchMode::DsTimer, 0, 16, 10, Codec::ImaAdpcm, 16, true, 0.0f, { 0.0f, 0.0f }, false },
+
+        { "PS1", "SPU: 44.1 kHz, 4-tap Gaussian interpolation, 4.12 pitch.", "Sony",
+          44100.0, Interp::Ps1Gauss, PitchMode::Fixed4p12, 0x4000, 16, 16, Codec::PsAdpcm, 24, false, 0.0f, { 0.0f, 0.0f }, false },
+        { "PS2", "SPU2: 48 kHz, 4-tap Gaussian interpolation, 4.12 pitch.", "Sony",
+          48000.0, Interp::Ps1Gauss, PitchMode::Fixed4p12, 0x4000, 16, 16, Codec::PsAdpcm, 48, false, 0.0f, { 0.0f, 0.0f }, false },
+
+        { "Mega Drive", "YM2612 DAC, 14 kHz Z80 mixer, ladder distortion, model 1 filter.", "Sega",
+          14000.0, Interp::Nearest, PitchMode::Free, 0, 8, 8, Codec::None, 4, true, 2842.0f, { 0.0f, 0.0f }, true },
+        { "Saturn / Dreamcast", "SCSP/AICA: 44.1 kHz, linear, octave + 10-bit F-number pitch.", "Sega",
+          44100.0, Interp::Linear, PitchMode::ScspOctFns, 0, 16, 16, Codec::None, 32, false, 0.0f, { 0.0f, 0.0f }, false },
+
+        { "Amiga 500", "Paula: period pitch, no interpolation, 4.4 kHz RC filter.", "Commodore",
+          amigaPalClock / 32.0, Interp::Nearest, PitchMode::AmigaPeriod, 0, 8, 0, Codec::None, 4, false, 4420.97f, { 5.128f, 0.0f }, false },
+        { "Amiga 1200", "Paula: period pitch, no interpolation, open top end.", "Commodore",
+          amigaPalClock / 32.0, Interp::Nearest, PitchMode::AmigaPeriod, 0, 8, 0, Codec::None, 4, false, 0.0f, { 5.319f, 0.0f }, false },
     };
 
     static_assert (sizeof (profiles) / sizeof (profiles[0]) == (size_t) ConsoleId::count);
@@ -39,11 +51,22 @@ const ConsoleProfile& getConsoleProfile (ConsoleId id)
     return profiles[(i >= 0 && i < numConsoles) ? i : 0];
 }
 
+const char* codecName (Codec c)
+{
+    switch (c)
+    {
+        case Codec::Brr:      return "BRR";
+        case Codec::PsAdpcm:  return "ADPCM";
+        case Codec::ImaAdpcm: return "IMA-ADPCM";
+        case Codec::Dpcm:     return "DPCM";
+        case Codec::None:     break;
+    }
+    return "PCM";
+}
+
 const std::array<int16_t, 512>& snesGaussTable()
 {
-    // Construction of the S-DSP Gaussian table, from ares (ISC licence,
-    // Copyright (c) 2004-2025 ares team, Near et al). It reproduces the 512-entry
-    // table from the SNES hardware. See THIRD_PARTY_NOTICES.md.
+    // Table construction from ares (ISC licence); see THIRD_PARTY_NOTICES.md.
     static const std::array<int16_t, 512> table = []
     {
         std::array<int16_t, 512> out {};
@@ -73,8 +96,7 @@ const std::array<int16_t, 512>& snesGaussTable()
 
 const std::array<int16_t, 512>& ps1GaussTable()
 {
-    // PS1 SPU Gaussian interpolation table, as documented in psx-spx
-    // ("Sound Processing Unit (SPU)", 4-Point Gaussian Interpolation).
+    // From psx-spx, "4-Point Gaussian Interpolation".
     static const std::array<int16_t, 512> table =
     {
     -1, -1, -1, -1, -1, -1, -1, -1,
@@ -141,6 +163,80 @@ const std::array<int16_t, 512>& ps1GaussTable()
     22686, 22709, 22731, 22752, 22772, 22791, 22809, 22826,
     22842, 22857, 22872, 22885, 22897, 22908, 22918, 22927,
     22935, 22942, 22948, 22953, 22957, 22960, 22962, 22963,
+    };
+    return table;
+}
+
+const std::array<int16_t, 256>& n64ResampleTable()
+{
+    // RSP audio microcode resampler coefficients: 64 phases x 4 taps, Q15.
+    // Values as used by mupen64plus-rsp-hle (RESAMPLE_LUT).
+    static const std::array<int16_t, 256> table =
+    {
+        3129, 26285, 3398, -33,
+        2873, 26262, 3679, -40,
+        2628, 26217, 3971, -48,
+        2394, 26150, 4276, -56,
+        2173, 26061, 4592, -65,
+        1963, 25950, 4920, -74,
+        1764, 25817, 5260, -84,
+        1576, 25663, 5611, -95,
+        1399, 25487, 5974, -106,
+        1233, 25291, 6347, -118,
+        1077, 25075, 6732, -130,
+        932, 24838, 7127, -143,
+        796, 24583, 7532, -156,
+        671, 24309, 7947, -170,
+        554, 24016, 8371, -184,
+        446, 23706, 8804, -198,
+        347, 23379, 9246, -212,
+        257, 23036, 9696, -226,
+        174, 22678, 10153, -240,
+        99, 22304, 10618, -254,
+        31, 21917, 11088, -268,
+        -30, 21517, 11564, -280,
+        -84, 21104, 12045, -293,
+        -132, 20679, 12531, -304,
+        -173, 20244, 13020, -314,
+        -210, 19799, 13512, -323,
+        -241, 19345, 14006, -330,
+        -267, 18882, 14501, -336,
+        -289, 18413, 14997, -340,
+        -306, 17937, 15493, -341,
+        -320, 17456, 15988, -340,
+        -330, 16970, 16480, -337,
+        -337, 16480, 16970, -330,
+        -340, 15988, 17456, -320,
+        -341, 15493, 17937, -306,
+        -340, 14997, 18413, -289,
+        -336, 14501, 18882, -267,
+        -330, 14006, 19345, -241,
+        -323, 13512, 19799, -210,
+        -314, 13020, 20244, -173,
+        -304, 12531, 20679, -132,
+        -293, 12045, 21104, -84,
+        -280, 11564, 21517, -30,
+        -268, 11088, 21917, 31,
+        -254, 10618, 22304, 99,
+        -240, 10153, 22678, 174,
+        -226, 9696, 23036, 257,
+        -212, 9246, 23379, 347,
+        -198, 8804, 23706, 446,
+        -184, 8371, 24016, 554,
+        -170, 7947, 24309, 671,
+        -156, 7532, 24583, 796,
+        -143, 7127, 24838, 932,
+        -130, 6732, 25075, 1077,
+        -118, 6347, 25291, 1233,
+        -106, 5974, 25487, 1399,
+        -95, 5611, 25663, 1576,
+        -84, 5260, 25817, 1764,
+        -74, 4920, 25950, 1963,
+        -65, 4592, 26061, 2173,
+        -56, 4276, 26150, 2394,
+        -48, 3971, 26217, 2628,
+        -40, 3679, 26262, 2873,
+        -33, 3398, 26285, 3129,
     };
     return table;
 }

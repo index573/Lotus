@@ -1,10 +1,7 @@
 #pragma once
 
-// Lotus - the sample playback engine.
-//
-// Framework-free. The host wrapper (PluginProcessor) owns one Synth, feeds it MIDI
-// and asks it to render. The audio path is allocation-free and lock-free; the owner
-// is responsible for not calling setSoundFont() concurrently with render().
+// The sample playback engine. Framework-free; the audio path never allocates or
+// locks. The owner must not call setSoundFont()/setCodedPool() while render() runs.
 
 #include "Consoles.h"
 #include "Effects.h"
@@ -21,17 +18,19 @@ namespace lotus
 
 struct EngineParams
 {
-    // Lotus ADSR
     float attack  = 0.0f;   // seconds
-    float decay   = 0.0f;   // seconds
-    float sustain = 1.0f;   // linear 0..1
-    float release = 0.0f;   // seconds
+    float decay   = 0.0f;
+    float sustain = 1.0f;   // 0..1
+    float release = 0.0f;
 
-    bool cutOnNoteOff   = false;  // note-off silences immediately (1 ms de-click)
-    bool useSf2Envelope = false;  // use the file's own envelope instead of the knobs
+    bool cutOnNoteOff   = false;
+    bool useSf2Envelope = false;
     ConsoleId console   = ConsoleId::Modern;
-    float masterGain    = 1.0f;   // linear
-    int   bendRange     = 2;      // semitones
+    bool hardwareVoices = false;   // limit polyphony to the console's voice count
+    bool nativeFormat   = false;   // play the console-codec version of the samples
+    float masterGain    = 1.0f;
+    int   bendRange     = 2;       // semitones
+    float glide         = 0.0f;    // seconds
 
     EffectParams fx;
 };
@@ -45,30 +44,27 @@ public:
 
     void prepare (double hostSampleRate, int maxBlockSize);
 
-    /** Swap the SoundFont. Must not be called while render() is running. Kills all voices. */
     void setSoundFont (const SoundFont* sf);
     const SoundFont* getSoundFont() const { return soundFont; }
+
+    /** A pre-decoded copy of the sample pool in a console's native format (or nullptr). */
+    void setCodedPool (const std::vector<int16_t>* pool, Codec codec);
 
     void setPresetIndex (int index);
     int  getPresetIndex() const { return presetIndex.load(); }
 
-    /** Call once per block before rendering. */
     void setParams (const EngineParams& p);
 
-    /** Raw MIDI message. Omni: the channel is ignored. */
     void handleMidi (const uint8_t* data, int size);
-
     void noteOn (int key, int velocity);
     void noteOff (int key);
     void allNotesOff();
     void allSoundOff();
 
-    /** Renders (overwrites) numSamples into left/right. */
     void render (float* left, float* right, int numSamples);
 
     int getActiveVoiceCount() const { return activeVoices.load (std::memory_order_relaxed); }
 
-    /** Set when a MIDI program change moved to a different preset; the UI clears it. */
     std::atomic<bool> presetChangedByMidi { false };
 
 private:
@@ -76,15 +72,17 @@ private:
     {
         bool active = false;
         const Region* region = nullptr;
-        int key = 0;          // the key that was pressed (for note-off matching)
-        int pitchKey = 0;     // the key used for pitch (may be overridden by the region)
-        uint32_t noteId = 0;  // voices started by the same note-on share an id
+        int key = 0;
+        int pitchKey = 0;
+        uint32_t noteId = 0;
         uint32_t age = 0;
         bool held = false, sustained = false, released = false, hasLooped = false;
-        int64_t pos = 0;      // 32.32 fixed point, absolute index into the sample pool
+        int64_t pos = 0;     // 32.32 fixed point into the sample pool
         int64_t step = 0;
         float baseGain = 1.0f;
         float pan = 0.0f;
+        float glideCents = 0.0f;
+        float glideRate = 0.0f;   // cents per engine sample
         Envelope env;
     };
 
@@ -92,7 +90,7 @@ private:
     void releaseVoice (Voice& v);
     Voice& allocateVoice();
     void updatePitch (Voice& v) const;
-    void renderEngine (float* outL, float* outR, int numEngineSamples);
+    void renderEngine (float* outL, float* outR, int n);
     void applyEffectsAndOutputStage (float* outL, float* outR, int n);
     void configureConsole();
 
@@ -100,6 +98,8 @@ private:
     void renderVoice (Voice& v, float* outL, float* outR, int n, float gainL, float gainR);
 
     const SoundFont* soundFont = nullptr;
+    const std::vector<int16_t>* codedPool = nullptr;
+    Codec codedPoolCodec = Codec::None;
     std::atomic<int> presetIndex { 0 };
 
     EngineParams params;
@@ -108,25 +108,27 @@ private:
 
     double hostRate = 44100.0;
     double engineRate = 44100.0;
-    double engineStep = 1.0;      // engine samples per host sample
+    double engineStep = 1.0;
     double enginePhase = 0.0;
     bool passthrough = true;
     float histL[4] {}, histR[4] {};
 
     std::vector<float> engineL, engineR;
-    std::vector<float> engineDryL, engineDryR, engineWetL, engineWetR;   // effect scratch
+    std::vector<float> dryL, dryR, wetL, wetR;
     int maxBlock = 512;
 
     SnesEcho snesEcho;
     Ps1Reverb ps1Reverb;
-    bool echoWasOn = false, reverbWasOn = false;
+    N64Reverb n64Reverb;
+    AnalogStage analog;
+    bool echoWasOn = false, ps1WasOn = false, n64WasOn = false;
 
     std::array<Voice, maxVoices> voices;
     uint32_t ageCounter = 0, noteCounter = 0;
     std::atomic<int> activeVoices { 0 };
+    int lastKey = -1;
 
-    // MIDI controller state
-    float pitchBend = 0.0f;  // -1..1
+    float pitchBend = 0.0f;
     float ccVolume = 1.0f, ccExpression = 1.0f, ccPan = 0.0f;
     bool sustainPedal = false;
     int bankMsb = 0, bankLsb = 0;

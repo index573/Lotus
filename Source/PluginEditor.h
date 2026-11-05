@@ -25,7 +25,7 @@ public:
     static constexpr int baseHeight = 470;
 
 private:
-    /** Everything is laid out at a fixed logical size inside this, then scaled. */
+    // Laid out at a fixed logical size, then scaled to the window.
     class Content final : public juce::Component
     {
     public:
@@ -35,13 +35,19 @@ private:
         LotusEditor& editor;
     };
 
+    enum Effect { snes = 0, n64, ps1, led, numEffects };
+
     void timerCallback() override;
     void refreshPresetList();
     void refreshInfo();
+    void refreshConsole();
     void updateEnablement();
+    void showPage (int page);
+    void showEffect (int effect);
     void openFileChooser();
     void loadFile (const juce::File&);
     void stepPreset (int delta);
+    float param (const char* id) const;
 
     LotusProcessor& processor;
     lotus::ui::LotusLookAndFeel lnf;
@@ -50,6 +56,7 @@ private:
     Content content { *this };
 
     lotus::ui::LotusLogo logo;
+    lotus::ui::Segmented pageTabs { juce::StringArray { "Sound", "Effects" } };
     juce::TextButton loadButton { "Load SF2" };
 
     lotus::ui::Card presetCard;
@@ -58,51 +65,43 @@ private:
     juce::ComboBox presetBox;
     juce::Label infoLabel;
 
+    // Sound page
     lotus::ui::Card envCard { "Envelope" };
     lotus::ui::EnvelopeView envelopeView;
     lotus::ui::Knob attackKnob, decayKnob, sustainKnob, releaseKnob;
 
     lotus::ui::Card consoleCard { "Console" };
     juce::ComboBox consoleBox;
-    juce::Label consoleDesc;
     std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment> consoleAttachment;
+    lotus::ui::Chip formatChip, voicesChip;
 
-    lotus::ui::Card noteOffCard { "Note off" };
-    lotus::ui::Segmented noteOffSwitch;
-    juce::Label noteOffDesc;
-
-    lotus::ui::Card envSourceCard { "Envelope from" };
-    lotus::ui::Segmented envSourceSwitch;
-    juce::Label envSourceDesc;
+    lotus::ui::Card playCard { "Playback" };
+    juce::Label noteOffLabel, envSourceLabel;
+    lotus::ui::Segmented noteOffSwitch, envSourceSwitch;
 
     lotus::ui::Card outputCard;
-    lotus::ui::Knob volumeKnob, bendKnob;
+    lotus::ui::Knob volumeKnob, bendKnob, glideKnob;
 
     // Effects page
-    lotus::ui::Segmented pageTabs { juce::StringArray { "Sound", "Effects" } };
+    lotus::ui::Card fxListCard { "Effects" };
+    std::array<std::unique_ptr<lotus::ui::EffectRow>, numEffects> fxRows;
+    lotus::ui::Card fxCard;
+    std::array<std::unique_ptr<lotus::ui::Switch>, numEffects> fxSwitches;
+    juce::Label fxDesc, fxControlLabel, fxHint;
 
-    lotus::ui::Card snesCard { "SNES Echo" };
-    lotus::ui::Switch snesSwitch;
-    juce::Label snesDesc, snesFilterLabel, snesHint;
     lotus::ui::Segmented snesFilter;
     lotus::ui::Knob snesDelayKnob, snesFeedbackKnob, snesVolumeKnob;
-
-    lotus::ui::Card ps1Card { "PS1 Reverb" };
-    lotus::ui::Switch ps1Switch;
-    juce::Label ps1Desc, ps1TypeLabel, ps1Hint;
-    juce::ComboBox ps1PresetBox;
-    std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment> ps1PresetAttachment;
-    lotus::ui::Knob ps1DepthKnob;
+    juce::ComboBox n64PresetBox, ps1PresetBox;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment> n64PresetAttachment, ps1PresetAttachment;
+    lotus::ui::Knob n64MixKnob, ps1DepthKnob;
 
     std::vector<juce::Component*> soundPage, effectsPage;
-    void showPage (int page);
-    void updateEffectHints();
-    int seenConsole = -1;
+    std::array<std::vector<juce::Component*>, numEffects> effectControls;
 
     std::unique_ptr<juce::FileChooser> chooser;
-    int seenGeneration = -1;
-    int seenPreset = -1;
-    int seenVoices = -1;
+    int page = 0, selectedEffect = snes;
+    int seenGeneration = -1, seenPreset = -1, seenVoices = -1, seenConsole = -1;
+    bool seenEncoding = false;
     bool dragHover = false;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (LotusEditor)

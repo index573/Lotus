@@ -1,21 +1,12 @@
 #pragma once
 
-// Lotus - amplitude envelope.
-//
-// Two flavours share one implementation:
-//
-//  * Lotus ADSR (the knobs). Times are exact: a 250 ms release takes 250 ms from
-//    wherever the level is to silence, and 0 means *instant*. No hidden minimum
-//    release, no "tail" the user can't get rid of.
-//
-//  * SoundFont envelope (the file's own DAHDSR). Uses the SF2 semantics, where
-//    decay/release times describe a full 96 dB fall, so a partially decayed note
-//    releases proportionally faster.
-//
-// Attack is linear in amplitude; decay and release are linear in dB (i.e.
-// exponential in amplitude), which is how both the SF2 spec and most console
-// hardware envelopes behave. Everything ends at -96 dB, at which point the voice is
-// freed - so release really does end.
+// Amplitude envelope with two behaviours:
+//  * Lotus ADSR: times are exact. A 250 ms release takes 250 ms from wherever the
+//    level is, and 0 means instant.
+//  * SF2: the file's DAHDSR with the spec's semantics, where decay/release times
+//    describe a full 96 dB fall.
+// Attack is linear in amplitude; decay and release are linear in dB. The voice is freed
+// at -96 dB, so a release always ends.
 
 #include <algorithm>
 #include <cmath>

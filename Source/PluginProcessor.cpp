@@ -16,100 +16,93 @@ float parseTime (const juce::String& text)
     const float v = t.getFloatValue();
     if (t.endsWith ("ms")) return v / 1000.0f;
     if (t.endsWith ("s"))  return v;
-    return v < 20.0f ? v : v / 1000.0f;   // bare numbers: "0.5" = seconds, "250" = ms
+    return v < 20.0f ? v : v / 1000.0f;   // bare "0.5" is seconds, "250" is ms
 }
 
-std::unique_ptr<juce::AudioParameterFloat> timeParam (const char* id, const char* name, float def)
+juce::String percent (float v) { return juce::String (juce::roundToInt (v)) + "%"; }
+
+std::unique_ptr<juce::AudioParameterFloat> timeParam (const char* id, const char* name, float maxSeconds, float def)
 {
-    juce::NormalisableRange<float> range (0.0f, 10.0f);
-    range.setSkewForCentre (0.5f);
+    juce::NormalisableRange<float> range (0.0f, maxSeconds);
+    range.setSkewForCentre (maxSeconds * 0.05f);
     return std::make_unique<juce::AudioParameterFloat> (
         juce::ParameterID { id, 1 }, name, range, def,
         juce::AudioParameterFloatAttributes()
             .withStringFromValueFunction ([] (float v, int) { return formatTime (v); })
             .withValueFromStringFunction ([] (const juce::String& s) { return parseTime (s); }));
 }
+
+std::unique_ptr<juce::AudioParameterFloat> percentParam (const char* id, const char* name, float def)
+{
+    return std::make_unique<juce::AudioParameterFloat> (
+        juce::ParameterID { id, 1 }, name, juce::NormalisableRange<float> (0.0f, 100.0f, 1.0f), def,
+        juce::AudioParameterFloatAttributes()
+            .withStringFromValueFunction ([] (float v, int) { return percent (v); })
+            .withValueFromStringFunction ([] (const juce::String& s) { return s.getFloatValue(); }));
+}
+
+std::unique_ptr<juce::AudioParameterBool> boolParam (const char* id, const char* name, bool def = false)
+{
+    return std::make_unique<juce::AudioParameterBool> (juce::ParameterID { id, 1 }, name, def);
+}
+
+template <typename NameFn>
+std::unique_ptr<juce::AudioParameterChoice> choiceParam (const char* id, const char* name, int count, NameFn nameOf, int def)
+{
+    juce::StringArray items;
+    for (int i = 0; i < count; ++i) items.add (nameOf (i));
+    return std::make_unique<juce::AudioParameterChoice> (juce::ParameterID { id, 1 }, name, items, def);
+}
 } // namespace
 
 juce::AudioProcessorValueTreeState::ParameterLayout LotusProcessor::createLayout()
 {
+    using namespace ParamIDs;
     juce::AudioProcessorValueTreeState::ParameterLayout layout;
 
-    layout.add (timeParam (ParamIDs::attack,  "Attack",  0.0f));
-    layout.add (timeParam (ParamIDs::decay,   "Decay",   0.0f));
+    layout.add (timeParam (attack, "Attack", 10.0f, 0.0f));
+    layout.add (timeParam (decay, "Decay", 10.0f, 0.0f));
+    layout.add (percentParam (sustain, "Sustain", 100.0f));
+    layout.add (timeParam (release, "Release", 10.0f, 0.05f));
+    layout.add (std::make_unique<juce::AudioParameterChoice> (juce::ParameterID { noteOff, 1 }, "Note Off", juce::StringArray { "Release", "Cut" }, 0));
+    layout.add (std::make_unique<juce::AudioParameterChoice> (juce::ParameterID { envSource, 1 }, "Envelope", juce::StringArray { "Lotus", "SF2" }, 0));
+
+    layout.add (choiceParam (console, "Console", lotus::numConsoles,
+                             [] (int i) { return lotus::getConsoleProfile ((lotus::ConsoleId) i).name; }, 0));
+    layout.add (boolParam (nativeFormat, "Native Sample Format"));
+    layout.add (boolParam (voiceLimit, "Hardware Voice Limit"));
 
     layout.add (std::make_unique<juce::AudioParameterFloat> (
-        juce::ParameterID { ParamIDs::sustain, 1 }, "Sustain", juce::NormalisableRange<float> (0.0f, 100.0f), 100.0f,
+        juce::ParameterID { volume, 1 }, "Volume", juce::NormalisableRange<float> (-60.0f, 12.0f, 0.1f), 0.0f,
         juce::AudioParameterFloatAttributes()
-            .withStringFromValueFunction ([] (float v, int) { return juce::String (juce::roundToInt (v)) + "%"; })
+            .withStringFromValueFunction ([] (float v, int) { return v <= -60.0f ? juce::String ("-inf dB") : juce::String (v, 1) + " dB"; })
             .withValueFromStringFunction ([] (const juce::String& s) { return s.getFloatValue(); })));
-
-    layout.add (timeParam (ParamIDs::release, "Release", 0.05f));
-
-    layout.add (std::make_unique<juce::AudioParameterChoice> (
-        juce::ParameterID { ParamIDs::noteOff, 1 }, "Note Off", juce::StringArray { "Release", "Cut" }, 0));
-
-    layout.add (std::make_unique<juce::AudioParameterChoice> (
-        juce::ParameterID { ParamIDs::envSource, 1 }, "Envelope", juce::StringArray { "Lotus", "SoundFont" }, 0));
-
-    juce::StringArray consoles;
-    for (int i = 0; i < lotus::numConsoles; ++i)
-        consoles.add (lotus::getConsoleProfile ((lotus::ConsoleId) i).name);
-    layout.add (std::make_unique<juce::AudioParameterChoice> (
-        juce::ParameterID { ParamIDs::console, 1 }, "Console", consoles, 0));
-
-    layout.add (std::make_unique<juce::AudioParameterFloat> (
-        juce::ParameterID { ParamIDs::volume, 1 }, "Volume", juce::NormalisableRange<float> (-60.0f, 12.0f, 0.1f), 0.0f,
-        juce::AudioParameterFloatAttributes()
-            .withStringFromValueFunction ([] (float v, int)
-            {
-                return v <= -60.0f ? juce::String ("-inf dB") : juce::String (v, 1) + " dB";
-            })
-            .withValueFromStringFunction ([] (const juce::String& s) { return s.getFloatValue(); })));
-
     layout.add (std::make_unique<juce::AudioParameterInt> (
-        juce::ParameterID { ParamIDs::bendRange, 1 }, "Bend Range", 0, 24, 2,
+        juce::ParameterID { bendRange, 1 }, "Bend Range", 0, 24, 2,
         juce::AudioParameterIntAttributes().withStringFromValueFunction ([] (int v, int) { return juce::String (v) + " st"; })));
+    layout.add (timeParam (glide, "Glide", 2.0f, 0.0f));
 
-    // --- Console effects --------------------------------------------------------
-    layout.add (std::make_unique<juce::AudioParameterBool> (juce::ParameterID { ParamIDs::snesOn, 1 }, "SNES Echo", false));
+    layout.add (boolParam (snesOn, "SNES Echo"));
     layout.add (std::make_unique<juce::AudioParameterInt> (
-        juce::ParameterID { ParamIDs::snesDelay, 1 }, "SNES Echo Delay", 0, 15, 5,
-        juce::AudioParameterIntAttributes().withStringFromValueFunction ([] (int v, int)
-        {
-            return v == 0 ? juce::String ("0 ms") : juce::String (v * 16) + " ms";
-        })));
+        juce::ParameterID { snesDelay, 1 }, "SNES Echo Delay", 0, 15, 5,
+        juce::AudioParameterIntAttributes().withStringFromValueFunction ([] (int v, int) { return juce::String (v * 16) + " ms"; })));
     layout.add (std::make_unique<juce::AudioParameterInt> (
-        juce::ParameterID { ParamIDs::snesFeedback, 1 }, "SNES Echo Feedback", -128, 127, 64,
-        juce::AudioParameterIntAttributes().withStringFromValueFunction ([] (int v, int)
-        {
-            return juce::String (juce::roundToInt (v * 100.0f / 128.0f)) + "%";
-        })));
+        juce::ParameterID { snesFeedback, 1 }, "SNES Echo Feedback", -128, 127, 64,
+        juce::AudioParameterIntAttributes().withStringFromValueFunction ([] (int v, int) { return percent (v * 100.0f / 128.0f); })));
     layout.add (std::make_unique<juce::AudioParameterInt> (
-        juce::ParameterID { ParamIDs::snesVolume, 1 }, "SNES Echo Volume", 0, 127, 48,
-        juce::AudioParameterIntAttributes().withStringFromValueFunction ([] (int v, int)
-        {
-            return juce::String (juce::roundToInt (v * 100.0f / 128.0f)) + "%";
-        })));
-    {
-        juce::StringArray firs;
-        for (int i = 0; i < lotus::numSnesFirPresets; ++i) firs.add (lotus::snesFirPresetName (i));
-        layout.add (std::make_unique<juce::AudioParameterChoice> (
-            juce::ParameterID { ParamIDs::snesFilter, 1 }, "SNES Echo Filter", firs, 0));
-    }
+        juce::ParameterID { snesVolume, 1 }, "SNES Echo Volume", 0, 127, 48,
+        juce::AudioParameterIntAttributes().withStringFromValueFunction ([] (int v, int) { return percent (v * 100.0f / 128.0f); })));
+    layout.add (choiceParam (snesFilter, "SNES Echo Filter", lotus::numSnesFirPresets, lotus::snesFirPresetName, 0));
 
-    layout.add (std::make_unique<juce::AudioParameterBool> (juce::ParameterID { ParamIDs::ps1On, 1 }, "PS1 Reverb", false));
-    {
-        juce::StringArray presets;
-        for (int i = 0; i < lotus::numPs1ReverbPresets; ++i) presets.add (lotus::ps1ReverbPresetName (i));
-        layout.add (std::make_unique<juce::AudioParameterChoice> (
-            juce::ParameterID { ParamIDs::ps1Preset, 1 }, "PS1 Reverb Type", presets, 2));   // Studio Medium
-    }
-    layout.add (std::make_unique<juce::AudioParameterFloat> (
-        juce::ParameterID { ParamIDs::ps1Depth, 1 }, "PS1 Reverb Depth", juce::NormalisableRange<float> (0.0f, 100.0f, 1.0f), 50.0f,
-        juce::AudioParameterFloatAttributes()
-            .withStringFromValueFunction ([] (float v, int) { return juce::String (juce::roundToInt (v)) + "%"; })
-            .withValueFromStringFunction ([] (const juce::String& t) { return t.getFloatValue(); })));
+    layout.add (boolParam (n64On, "N64 Reverb"));
+    layout.add (choiceParam (n64Preset, "N64 Reverb Type", lotus::numN64FxPresets, lotus::n64FxPresetName, 1));
+    layout.add (percentParam (n64Mix, "N64 Reverb Mix", 50.0f));
+
+    layout.add (boolParam (ps1On, "PS1 Reverb"));
+    layout.add (choiceParam (ps1Preset, "PS1 Reverb Type", lotus::numPs1ReverbPresets, lotus::ps1ReverbPresetName, 2));
+    layout.add (percentParam (ps1Depth, "PS1 Reverb Depth", 50.0f));
+
+    layout.add (boolParam (ledOn, "Amiga LED Filter"));
 
     return layout;
 }
@@ -118,29 +111,39 @@ LotusProcessor::LotusProcessor()
     : AudioProcessor (BusesProperties().withOutput ("Output", juce::AudioChannelSet::stereo(), true)),
       params (*this, nullptr, "Lotus", createLayout())
 {
-    pAttack    = params.getRawParameterValue (ParamIDs::attack);
-    pDecay     = params.getRawParameterValue (ParamIDs::decay);
-    pSustain   = params.getRawParameterValue (ParamIDs::sustain);
-    pRelease   = params.getRawParameterValue (ParamIDs::release);
-    pNoteOff   = params.getRawParameterValue (ParamIDs::noteOff);
-    pEnvSource = params.getRawParameterValue (ParamIDs::envSource);
-    pConsole   = params.getRawParameterValue (ParamIDs::console);
-    pVolume    = params.getRawParameterValue (ParamIDs::volume);
-    pBendRange = params.getRawParameterValue (ParamIDs::bendRange);
-    pSnesOn       = params.getRawParameterValue (ParamIDs::snesOn);
-    pSnesDelay    = params.getRawParameterValue (ParamIDs::snesDelay);
-    pSnesFeedback = params.getRawParameterValue (ParamIDs::snesFeedback);
-    pSnesVolume   = params.getRawParameterValue (ParamIDs::snesVolume);
-    pSnesFilter   = params.getRawParameterValue (ParamIDs::snesFilter);
-    pPs1On        = params.getRawParameterValue (ParamIDs::ps1On);
-    pPs1Preset    = params.getRawParameterValue (ParamIDs::ps1Preset);
-    pPs1Depth     = params.getRawParameterValue (ParamIDs::ps1Depth);
+    using namespace ParamIDs;
+    for (const char* id : { attack, decay, sustain, release, noteOff, envSource, console, nativeFormat, voiceLimit,
+                            volume, bendRange, glide, snesOn, snesDelay, snesFeedback, snesVolume, snesFilter,
+                            n64On, n64Preset, n64Mix, ps1On, ps1Preset, ps1Depth, ledOn })
+    {
+        raw[id] = params.getRawParameterValue (id);
+        jassert (raw[id] != nullptr);
+    }
+
+    startTimerHz (5);
+}
+
+LotusProcessor::~LotusProcessor()
+{
+    stopTimer();
+    stopEncoding();
+}
+
+float LotusProcessor::value (const char* id) const
+{
+    return raw.at (id)->load();
+}
+
+lotus::ConsoleId LotusProcessor::getConsole() const
+{
+    return (lotus::ConsoleId) juce::jlimit (0, lotus::numConsoles - 1, (int) value (ParamIDs::console));
 }
 
 double LotusProcessor::getTailLengthSeconds() const
 {
-    // Long enough for the slowest echo/reverb settings to die away.
-    return (pSnesOn->load() > 0.5f || pPs1On->load() > 0.5f) ? 10.0 : 0.0;
+    using namespace ParamIDs;
+    const bool fx = value (snesOn) > 0.5f || value (ps1On) > 0.5f || value (n64On) > 0.5f;
+    return fx ? 10.0 : 0.0;
 }
 
 bool LotusProcessor::isBusesLayoutSupported (const BusesLayout& layouts) const
@@ -158,6 +161,7 @@ void LotusProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
 
 void LotusProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBuffer& midi)
 {
+    using namespace ParamIDs;
     juce::ScopedNoDenormals noDenormals;
     const int numSamples = buffer.getNumSamples();
     buffer.clear();
@@ -166,31 +170,37 @@ void LotusProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiB
 
     const juce::SpinLock::ScopedTryLockType lock (engineLock);
     if (! lock.isLocked())
-        return;   // a SoundFont is being swapped in right now; output silence for one block
+        return;   // a SoundFont or sample pool is being swapped in; one silent block
 
     lotus::EngineParams p;
-    p.attack = pAttack->load();
-    p.decay = pDecay->load();
-    p.sustain = pSustain->load() / 100.0f;
-    p.release = pRelease->load();
-    p.cutOnNoteOff = pNoteOff->load() > 0.5f;
-    p.useSf2Envelope = pEnvSource->load() > 0.5f;
-    p.console = (lotus::ConsoleId) juce::jlimit (0, lotus::numConsoles - 1, (int) pConsole->load());
-    const float db = pVolume->load();
+    p.attack = value (attack);
+    p.decay = value (decay);
+    p.sustain = value (sustain) / 100.0f;
+    p.release = value (release);
+    p.cutOnNoteOff = value (noteOff) > 0.5f;
+    p.useSf2Envelope = value (envSource) > 0.5f;
+    p.console = getConsole();
+    p.nativeFormat = value (nativeFormat) > 0.5f;
+    p.hardwareVoices = value (voiceLimit) > 0.5f;
+    const float db = value (volume);
     p.masterGain = db <= -60.0f ? 0.0f : juce::Decibels::decibelsToGain (db);
-    p.bendRange = (int) pBendRange->load();
-    p.fx.snesEcho     = pSnesOn->load() > 0.5f;
-    p.fx.snesDelay    = (int) pSnesDelay->load();
-    p.fx.snesFeedback = (int) pSnesFeedback->load();
-    p.fx.snesVolume   = (int) pSnesVolume->load();
-    p.fx.snesFilter   = (int) pSnesFilter->load();
-    p.fx.ps1Reverb    = pPs1On->load() > 0.5f;
-    p.fx.ps1Preset    = (int) pPs1Preset->load();
-    p.fx.ps1Depth     = pPs1Depth->load() / 100.0f;
+    p.bendRange = (int) value (bendRange);
+    p.glide = value (glide);
+
+    p.fx.snesEcho     = value (snesOn) > 0.5f;
+    p.fx.snesDelay    = (int) value (snesDelay);
+    p.fx.snesFeedback = (int) value (snesFeedback);
+    p.fx.snesVolume   = (int) value (snesVolume);
+    p.fx.snesFilter   = (int) value (snesFilter);
+    p.fx.n64Reverb    = value (n64On) > 0.5f;
+    p.fx.n64Preset    = (int) value (n64Preset);
+    p.fx.n64Mix       = value (n64Mix) / 100.0f;
+    p.fx.ps1Reverb    = value (ps1On) > 0.5f;
+    p.fx.ps1Preset    = (int) value (ps1Preset);
+    p.fx.ps1Depth     = value (ps1Depth) / 100.0f;
+    p.fx.ledFilter    = value (ledOn) > 0.5f;
     synth.setParams (p);
 
-    // Stereo: render straight into the host buffer. Mono: render the right side into
-    // scratch and fold down.
     const bool stereo = buffer.getNumChannels() >= 2;
     if (! stereo && (int) scratchR.size() < numSamples)
         scratchR.resize ((size_t) numSamples);   // only if the host breaks its block-size promise
@@ -223,24 +233,85 @@ void LotusProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiB
         buffer.clear (ch, 0, numSamples);
 }
 
-// ---------------------------------------------------------------------------------
+// Native sample format: encode in the background, swap in under the lock.
+
+void LotusProcessor::timerCallback()
+{
+    if (encodeDone.exchange (false))
+    {
+        if (encoder.joinable()) encoder.join();
+        std::unique_ptr<std::vector<int16_t>> old;
+        if (encodedResult != nullptr && encodedFrom == soundFont.get())
+        {
+            const juce::SpinLock::ScopedLockType lock (engineLock);
+            old = std::move (installedPool);
+            installedPool = std::move (encodedResult);
+            installedCodec = encodingCodec;
+            synth.setCodedPool (installedPool.get(), installedCodec);
+        }
+        encodedResult.reset();
+        encoding = false;
+    }
+
+    const auto& profile = lotus::getConsoleProfile (getConsole());
+    const bool wanted = value (ParamIDs::nativeFormat) > 0.5f && profile.codec != lotus::Codec::None && soundFont != nullptr;
+    if (! wanted || encoding.load()) return;
+    if (installedCodec == profile.codec && installedPool != nullptr) return;
+
+    startEncoding (profile.codec);
+}
+
+void LotusProcessor::startEncoding (lotus::Codec codec)
+{
+    stopEncoding();
+    encoding = true;
+    cancelEncode = false;
+    encodingCodec = codec;
+    encodedFrom = soundFont.get();
+
+    auto source = soundFont;   // keeps the samples alive while the thread runs
+    encoder = std::thread ([this, source, codec]
+    {
+        auto result = std::make_unique<std::vector<int16_t>> (lotus::applyCodec (source->samples, codec, &cancelEncode));
+        if (! cancelEncode.load() && ! result->empty())
+            encodedResult = std::move (result);
+        encodeDone = true;
+    });
+}
+
+void LotusProcessor::stopEncoding()
+{
+    cancelEncode = true;
+    if (encoder.joinable()) encoder.join();
+    encodeDone = false;
+    encodedResult.reset();
+    encoding = false;
+}
 
 juce::String LotusProcessor::loadSoundFont (const juce::File& file)
 {
     std::string error;
-    auto loaded = lotus::SoundFont::loadFromFile (file.getFullPathName().toStdString(), error);
+    std::shared_ptr<const lotus::SoundFont> loaded = lotus::SoundFont::loadFromFile (file.getFullPathName().toStdString(), error);
     if (loaded == nullptr)
         return error.empty() ? juce::String ("Could not load SoundFont.") : juce::String (error);
 
-    std::unique_ptr<lotus::SoundFont> old;
+    stopEncoding();
+
+    std::shared_ptr<const lotus::SoundFont> old;
+    std::unique_ptr<std::vector<int16_t>> oldPool;
     {
         const juce::SpinLock::ScopedLockType lock (engineLock);
         old = std::move (soundFont);
         soundFont = std::move (loaded);
         synth.setSoundFont (soundFont.get());
+        synth.setCodedPool (nullptr, lotus::Codec::None);
+        oldPool = std::move (installedPool);
+        installedCodec = lotus::Codec::None;
         soundFontFile = file;
     }
-    old.reset();   // freed here, outside the lock and off the audio thread
+    // Freed here, outside the lock and off the audio thread.
+    old.reset();
+    oldPool.reset();
 
     ++soundFontGeneration;
     updateHostDisplay (ChangeDetails().withProgramChanged (true));
@@ -253,9 +324,6 @@ void LotusProcessor::selectPreset (int index)
     updateHostDisplay (ChangeDetails().withProgramChanged (true));
 }
 
-// Host programs are a fixed list of 128 MIDI program numbers (VST3 requires the
-// count to be fixed when the plugin is created). Program n selects the preset with
-// program number n, preferring the bank that's currently selected.
 int LotusProcessor::findPresetForProgram (int program) const
 {
     if (soundFont == nullptr) return -1;
@@ -269,11 +337,6 @@ int LotusProcessor::findPresetForProgram (int program) const
     return idx;
 }
 
-int LotusProcessor::getNumPrograms()
-{
-    return 128;
-}
-
 int LotusProcessor::getCurrentProgram()
 {
     const juce::SpinLock::ScopedTryLockType lock (engineLock);
@@ -285,14 +348,14 @@ int LotusProcessor::getCurrentProgram()
 
 void LotusProcessor::setCurrentProgram (int index)
 {
-    // May be called on the audio thread (VST3 program parameter), so never block.
+    // Can arrive on the audio thread (VST3 program parameter), so never block.
     const juce::SpinLock::ScopedTryLockType lock (engineLock);
     if (! lock.isLocked()) return;
     const int idx = findPresetForProgram (index);
     if (idx >= 0 && idx != synth.getPresetIndex())
     {
         synth.setPresetIndex (idx);
-        synth.presetChangedByMidi = true;   // lets the editor follow along
+        synth.presetChangedByMidi = true;
     }
 }
 
@@ -314,7 +377,6 @@ void LotusProcessor::getStateInformation (juce::MemoryBlock& destData)
     state.setProperty ("presetIndex", synth.getPresetIndex(), nullptr);
     if (soundFont && juce::isPositiveAndBelow (synth.getPresetIndex(), (int) soundFont->presets.size()))
     {
-        // Bank/program too, so the right preset is found even if the file was re-ordered.
         const auto& pr = soundFont->presets[(size_t) synth.getPresetIndex()];
         state.setProperty ("presetBank", pr.bank, nullptr);
         state.setProperty ("presetProgram", pr.program, nullptr);
@@ -343,11 +405,12 @@ void LotusProcessor::setStateInformation (const void* data, int sizeInBytes)
         if (file.existsAsFile())
             loadSoundFont (file);
         else
-            soundFontFile = file;   // remember it so the UI can say what's missing
+            soundFontFile = file;   // so the UI can say what's missing
     }
 
     if (soundFont)
     {
+        // Bank/program first, in case the file's presets were reordered since saving.
         int index = soundFont->findPreset ((int) state.getProperty ("presetBank", -1), (int) state.getProperty ("presetProgram", -1));
         if (index < 0) index = (int) state.getProperty ("presetIndex", 0);
         synth.setPresetIndex (index);

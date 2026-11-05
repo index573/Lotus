@@ -2,6 +2,39 @@
 
 using namespace lotus::ui;
 
+namespace
+{
+struct EffectInfo
+{
+    const char* name;
+    const char* console;
+    const char* onParam;
+    lotus::ConsoleId home;
+    const char* description;
+};
+
+const EffectInfo effectInfo[] =
+{
+    { "SNES Echo", "Super Nintendo", ParamIDs::snesOn, lotus::ConsoleId::Snes,
+      "The S-DSP echo unit: up to 240 ms of delay, signed feedback, and the 8-tap FIR filter that colours every repeat." },
+    { "N64 Reverb", "Nintendo 64", ParamIDs::n64On, lotus::ConsoleId::N64,
+      "libultra's effect bus: one delay line through all-pass sections, with a low-pass in the loop and modulated taps for chorus and flange." },
+    { "PS1 Reverb", "PlayStation", ParamIDs::ps1On, lotus::ConsoleId::Ps1,
+      "The SPU reverb with Sony's preset rooms, running at half rate like the hardware." },
+    { "LED Filter", "Amiga", ParamIDs::ledOn, lotus::ConsoleId::Amiga500,
+      "The Amiga's switchable 12 dB/oct low-pass at about 3.1 kHz. It was wired to the power LED, and games and trackers flicked it on for a darker sound." },
+};
+
+void styleSmallLabel (juce::Label& l, float size = 11.5f, bool caps = false)
+{
+    l.setFont (caps ? font (11.0f, true).withExtraKerningFactor (0.12f) : font (size));
+    l.setColour (juce::Label::textColourId, Palette::textDim);
+    l.setJustificationType (juce::Justification::topLeft);
+    l.setMinimumHorizontalScale (1.0f);
+    l.setInterceptsMouseClicks (false, false);
+}
+} // namespace
+
 LotusEditor::LotusEditor (LotusProcessor& p)
     : AudioProcessorEditor (p),
       processor (p),
@@ -9,23 +42,28 @@ LotusEditor::LotusEditor (LotusProcessor& p)
       decayKnob   (p.params, ParamIDs::decay,   "Decay"),
       sustainKnob (p.params, ParamIDs::sustain, "Sustain"),
       releaseKnob (p.params, ParamIDs::release, "Release"),
+      formatChip (p.params, ParamIDs::nativeFormat),
+      voicesChip (p.params, ParamIDs::voiceLimit),
       noteOffSwitch   (p.params, ParamIDs::noteOff,   { "Release", "Cut" }),
-      envSourceSwitch (p.params, ParamIDs::envSource, { "Lotus", "SoundFont" }),
+      envSourceSwitch (p.params, ParamIDs::envSource, { "Lotus", "SF2" }),
       volumeKnob (p.params, ParamIDs::volume,    "Volume"),
       bendKnob   (p.params, ParamIDs::bendRange, "Bend"),
-      snesSwitch (p.params, ParamIDs::snesOn),
+      glideKnob  (p.params, ParamIDs::glide,     "Glide"),
       snesFilter (p.params, ParamIDs::snesFilter, { "Flat", "Low", "High", "Band" }),
       snesDelayKnob    (p.params, ParamIDs::snesDelay,    "Delay"),
       snesFeedbackKnob (p.params, ParamIDs::snesFeedback, "Feedback"),
       snesVolumeKnob   (p.params, ParamIDs::snesVolume,   "Volume"),
-      ps1Switch (p.params, ParamIDs::ps1On),
+      n64MixKnob   (p.params, ParamIDs::n64Mix,   "Mix"),
       ps1DepthKnob (p.params, ParamIDs::ps1Depth, "Depth")
 {
     setLookAndFeel (&lnf);
     addAndMakeVisible (content);
 
+    // Header and preset bar
     content.addAndMakeVisible (logo);
+    content.addAndMakeVisible (pageTabs);
     content.addAndMakeVisible (loadButton);
+    pageTabs.onChange = [this] (int pg) { showPage (pg); };
     loadButton.onClick = [this] { openFileChooser(); };
     loadButton.setTooltip ("Load a SoundFont (.sf2). You can also drag one onto the window.");
 
@@ -48,97 +86,87 @@ LotusEditor::LotusEditor (LotusProcessor& p)
     infoLabel.setColour (juce::Label::textColourId, Palette::textDim);
     infoLabel.setInterceptsMouseClicks (false, false);
 
-    content.addAndMakeVisible (envCard);
-    content.addAndMakeVisible (envelopeView);
-    for (auto* k : { &attackKnob, &decayKnob, &sustainKnob, &releaseKnob })
-        content.addAndMakeVisible (k);
-    attackKnob.getSlider().setTooltip ("Attack: fade-in time. 0 = instant.");
-    decayKnob.getSlider().setTooltip ("Decay: time to fall from full level to the sustain level.");
-    sustainKnob.getSlider().setTooltip ("Sustain: level held while the key is down.");
-    releaseKnob.getSlider().setTooltip ("Release: time from note-off to silence. Exact - 0 means it stops dead.");
+    // Sound page
+    soundPage = { &envCard, &envelopeView, &attackKnob, &decayKnob, &sustainKnob, &releaseKnob,
+                  &consoleCard, &consoleBox, &formatChip, &voicesChip,
+                  &playCard, &noteOffLabel, &noteOffSwitch, &envSourceLabel, &envSourceSwitch,
+                  &outputCard, &volumeKnob, &bendKnob, &glideKnob };
 
-    content.addAndMakeVisible (consoleCard);
-    content.addAndMakeVisible (consoleBox);
-    content.addAndMakeVisible (consoleDesc);
+    attackKnob.getSlider().setTooltip ("Fade-in time. 0 = instant.");
+    decayKnob.getSlider().setTooltip ("Time to fall from full level to the sustain level.");
+    sustainKnob.getSlider().setTooltip ("Level held while the key is down.");
+    releaseKnob.getSlider().setTooltip ("Time from note-off to silence. Exact: 0 stops dead.");
+
+    juce::String lastGroup;
     for (int i = 0; i < lotus::numConsoles; ++i)
-        consoleBox.addItem (lotus::getConsoleProfile ((lotus::ConsoleId) i).name, i + 1);
-    consoleAttachment = std::make_unique<juce::AudioProcessorValueTreeState::ComboBoxAttachment> (p.params, ParamIDs::console, consoleBox);
-    consoleBox.onChange = [this] { refreshInfo(); };
-    for (auto* l : { &consoleDesc, &noteOffDesc, &envSourceDesc })
     {
-        l->setFont (font (11.5f));
-        l->setColour (juce::Label::textColourId, Palette::textDim);
-        l->setJustificationType (juce::Justification::topLeft);
-        l->setMinimumHorizontalScale (1.0f);
-        l->setInterceptsMouseClicks (false, false);
-        content.addAndMakeVisible (l);
+        const auto& prof = lotus::getConsoleProfile ((lotus::ConsoleId) i);
+        if (lastGroup != prof.group)
+        {
+            consoleBox.addSectionHeading (prof.group);
+            lastGroup = prof.group;
+        }
+        consoleBox.addItem (prof.name, i + 1);
     }
+    consoleAttachment = std::make_unique<juce::AudioProcessorValueTreeState::ComboBoxAttachment> (p.params, ParamIDs::console, consoleBox);
+    consoleBox.onChange = [this] { refreshConsole(); };
+    formatChip.setTooltip ("Play the samples as they'd sound after conversion to the console's own format "
+                           "(BRR, ADPCM, DPCM). Converting takes a moment after switching.");
+    voicesChip.setTooltip ("Limit polyphony to the console's hardware voices. Extra notes steal the oldest, like the real thing.");
 
-    content.addAndMakeVisible (noteOffCard);
-    content.addAndMakeVisible (noteOffSwitch);
-    noteOffSwitch.setTooltip ("Release: notes fade out with the envelope's release.\nCut: notes stop the moment the key is let go.");
+    for (auto* l : { &noteOffLabel, &envSourceLabel }) styleSmallLabel (*l, 12.5f);
+    noteOffLabel.setText ("Note off", juce::dontSendNotification);
+    envSourceLabel.setText ("Envelope", juce::dontSendNotification);
+    noteOffLabel.setJustificationType (juce::Justification::centredLeft);
+    envSourceLabel.setJustificationType (juce::Justification::centredLeft);
+    noteOffSwitch.setTooltip ("Release: notes fade out over the release time.\nCut: notes stop the moment the key is let go.");
+    envSourceSwitch.setTooltip ("Lotus: use the ADSR knobs.\nSF2: use the envelopes stored in the SoundFont.");
     noteOffSwitch.onChange = [this] (int) { updateEnablement(); };
-
-    content.addAndMakeVisible (envSourceCard);
-    content.addAndMakeVisible (envSourceSwitch);
-    envSourceSwitch.setTooltip ("Lotus: use the ADSR knobs above.\nSoundFont: use the envelope stored in the .sf2 file.");
     envSourceSwitch.onChange = [this] (int) { updateEnablement(); };
 
-    content.addAndMakeVisible (outputCard);
-    content.addAndMakeVisible (volumeKnob);
-    content.addAndMakeVisible (bendKnob);
     bendKnob.getSlider().setTooltip ("Pitch bend range in semitones.");
+    glideKnob.getSlider().setTooltip ("Slide from the previous note's pitch. 0 = off.");
 
-    // --- Effects page -----------------------------------------------------------
-    content.addAndMakeVisible (pageTabs);
-    pageTabs.setTooltip ("Switch between the instrument and the console effects.");
-    pageTabs.onChange = [this] (int page) { showPage (page); };
+    for (auto* c : soundPage) content.addChildComponent (c);
 
-    for (auto* c : std::initializer_list<juce::Component*> { &snesCard, &snesSwitch, &snesFilter, &snesDelayKnob,
-                                                              &snesFeedbackKnob, &snesVolumeKnob, &ps1Card, &ps1Switch,
-                                                              &ps1PresetBox, &ps1DepthKnob })
-        content.addChildComponent (c);
-
-    for (auto* l : { &snesDesc, &snesFilterLabel, &snesHint, &ps1Desc, &ps1TypeLabel, &ps1Hint })
+    // Effects page
+    for (int i = 0; i < numEffects; ++i)
     {
-        l->setFont (font (12.0f));
-        l->setColour (juce::Label::textColourId, Palette::textDim);
-        l->setJustificationType (juce::Justification::topLeft);
-        l->setMinimumHorizontalScale (1.0f);
-        l->setInterceptsMouseClicks (false, false);
-        content.addChildComponent (l);
+        fxRows[(size_t) i] = std::make_unique<EffectRow> (effectInfo[i].name, effectInfo[i].console);
+        fxRows[(size_t) i]->onClick = [this, i] { showEffect (i); };
+        fxSwitches[(size_t) i] = std::make_unique<Switch> (p.params, effectInfo[i].onParam);
+        fxSwitches[(size_t) i]->setTooltip (juce::String ("Turn the ") + effectInfo[i].name + " on or off.");
+        fxSwitches[(size_t) i]->onChange = [this] (bool) { updateEnablement(); };
     }
-    snesDesc.setText ("The S-DSP echo unit: a delay of up to 240 ms, signed feedback, and the 8-tap FIR "
-                      "filter that colours every repeat.", juce::dontSendNotification);
-    snesFilterLabel.setText ("FILTER", juce::dontSendNotification);
-    snesFilterLabel.setFont (font (11.0f, true).withExtraKerningFactor (0.12f));
-    ps1TypeLabel.setText ("TYPE", juce::dontSendNotification);
-    ps1TypeLabel.setFont (font (11.0f, true).withExtraKerningFactor (0.12f));
-    ps1Desc.setText ("The SPU reverb with Sony's preset rooms, running at 22.05 kHz like the hardware.",
-                     juce::dontSendNotification);
-    for (auto* l : { &snesHint, &ps1Hint })
-        l->setColour (juce::Label::textColourId, Palette::leaf);
 
-    snesSwitch.setTooltip ("Turn the SNES echo on or off.");
-    ps1Switch.setTooltip ("Turn the PS1 reverb on or off.");
-    snesFilter.setTooltip ("The echo FIR filter, using the four presets from Nintendo's standard sound driver.");
-    snesDelayKnob.getSlider().setTooltip ("EDL: echo delay in 16 ms steps (0-240 ms).");
-    snesFeedbackKnob.getSlider().setTooltip ("EFB: how much of each repeat feeds back. Negative values flip the phase of each repeat.");
-    snesVolumeKnob.getSlider().setTooltip ("EVOL: echo return level.");
-    ps1DepthKnob.getSlider().setTooltip ("Reverb return level.");
+    styleSmallLabel (fxDesc, 12.5f);
+    styleSmallLabel (fxControlLabel, 11.0f, true);
+    styleSmallLabel (fxHint, 12.0f);
+    fxHint.setColour (juce::Label::textColourId, Palette::leaf);
 
-    for (int i = 0; i < lotus::numPs1ReverbPresets; ++i)
-        ps1PresetBox.addItem (lotus::ps1ReverbPresetName (i), i + 1);
+    for (int i = 0; i < lotus::numN64FxPresets; ++i) n64PresetBox.addItem (lotus::n64FxPresetName (i), i + 1);
+    for (int i = 0; i < lotus::numPs1ReverbPresets; ++i) ps1PresetBox.addItem (lotus::ps1ReverbPresetName (i), i + 1);
+    n64PresetAttachment = std::make_unique<juce::AudioProcessorValueTreeState::ComboBoxAttachment> (p.params, ParamIDs::n64Preset, n64PresetBox);
     ps1PresetAttachment = std::make_unique<juce::AudioProcessorValueTreeState::ComboBoxAttachment> (p.params, ParamIDs::ps1Preset, ps1PresetBox);
 
-    snesSwitch.onChange = [this] (bool) { updateEnablement(); };
-    ps1Switch.onChange = [this] (bool) { updateEnablement(); };
+    snesFilter.setTooltip ("Echo FIR filter: the four presets from Nintendo's standard SNES sound driver.");
+    snesDelayKnob.getSlider().setTooltip ("EDL: echo delay in 16 ms steps.");
+    snesFeedbackKnob.getSlider().setTooltip ("EFB: feedback. Negative values flip the phase of each repeat.");
+    snesVolumeKnob.getSlider().setTooltip ("EVOL: echo return level.");
+    n64MixKnob.getSlider().setTooltip ("Effect send level.");
+    ps1DepthKnob.getSlider().setTooltip ("Reverb return level.");
 
-    soundPage = { &envCard, &envelopeView, &attackKnob, &decayKnob, &sustainKnob, &releaseKnob,
-                  &consoleCard, &consoleBox, &consoleDesc, &noteOffCard, &noteOffSwitch, &noteOffDesc,
-                  &envSourceCard, &envSourceSwitch, &envSourceDesc, &outputCard, &volumeKnob, &bendKnob };
-    effectsPage = { &snesCard, &snesSwitch, &snesDesc, &snesFilterLabel, &snesFilter, &snesDelayKnob, &snesFeedbackKnob,
-                    &snesVolumeKnob, &snesHint, &ps1Card, &ps1Switch, &ps1Desc, &ps1TypeLabel, &ps1PresetBox, &ps1DepthKnob, &ps1Hint };
+    effectControls[snes] = { &snesFilter, &snesDelayKnob, &snesFeedbackKnob, &snesVolumeKnob };
+    effectControls[n64] = { &n64PresetBox, &n64MixKnob };
+    effectControls[ps1] = { &ps1PresetBox, &ps1DepthKnob };
+    effectControls[led] = {};
+
+    effectsPage = { &fxListCard, &fxCard, &fxDesc, &fxControlLabel, &fxHint };
+    for (auto& r : fxRows) effectsPage.push_back (r.get());
+    for (auto* c : effectsPage) content.addChildComponent (c);
+    for (auto& sw : fxSwitches) content.addChildComponent (sw.get());
+    for (auto& list : effectControls)
+        for (auto* c : list) content.addChildComponent (c);
 
     setResizable (true, true);
     setResizeLimits (baseWidth * 3 / 4, baseHeight * 3 / 4, baseWidth * 2, baseHeight * 2);
@@ -146,39 +174,12 @@ LotusEditor::LotusEditor (LotusProcessor& p)
         c->setFixedAspectRatio ((double) baseWidth / (double) baseHeight);
     setSize (baseWidth, baseHeight);
 
-    for (auto* l : { &consoleDesc, &noteOffDesc, &envSourceDesc })
-        l->toFront (false);   // above their cards
-    for (auto* c : effectsPage)
-        if (c != &snesCard && c != &ps1Card) c->toFront (false);
-
-    sendLookAndFeelChange();   // make sure children created before setLookAndFeel pick it up
+    sendLookAndFeelChange();
     refreshPresetList();
+    refreshConsole();
     updateEnablement();
     showPage (0);
     startTimerHz (30);
-}
-
-void LotusEditor::showPage (int page)
-{
-    for (auto* c : soundPage) c->setVisible (page == 0);
-    for (auto* c : effectsPage) c->setVisible (page == 1);
-    pageTabs.setSelected (page);
-    updateEffectHints();
-}
-
-void LotusEditor::updateEffectHints()
-{
-    const int console = (int) processor.params.getRawParameterValue (ParamIDs::console)->load();
-    seenConsole = console;
-    const auto name = juce::String (lotus::getConsoleProfile ((lotus::ConsoleId) console).name);
-    snesHint.setText (console == (int) lotus::ConsoleId::Snes
-                          ? "Console is SNES: sample-exact echo."
-                          : "Console is " + name + ". Delay times are kept, but set Console to SNES for the exact filter sound.",
-                      juce::dontSendNotification);
-    ps1Hint.setText (console == (int) lotus::ConsoleId::Ps1
-                         ? "Console is PS1: sample-exact reverb."
-                         : "Console is " + name + ". Times are kept; set Console to PS1 for the exact sound.",
-                     juce::dontSendNotification);
 }
 
 LotusEditor::~LotusEditor()
@@ -187,8 +188,41 @@ LotusEditor::~LotusEditor()
     setLookAndFeel (nullptr);
 }
 
-// ---------------------------------------------------------------------------------
-// Layout & painting
+float LotusEditor::param (const char* id) const
+{
+    return processor.params.getRawParameterValue (id)->load();
+}
+
+void LotusEditor::showPage (int pg)
+{
+    page = pg;
+    for (auto* c : soundPage) c->setVisible (pg == 0);
+    for (auto* c : effectsPage) c->setVisible (pg == 1);
+    pageTabs.setSelected (pg);
+    showEffect (selectedEffect);
+}
+
+void LotusEditor::showEffect (int effect)
+{
+    selectedEffect = effect;
+    const bool fxPage = page == 1;
+
+    for (int i = 0; i < numEffects; ++i)
+    {
+        fxRows[(size_t) i]->setSelected (i == effect);
+        fxSwitches[(size_t) i]->setVisible (fxPage && i == effect);
+        for (auto* c : effectControls[(size_t) i]) c->setVisible (fxPage && i == effect);
+    }
+
+    const auto& info = effectInfo[effect];
+    fxCard.setTitle (info.name);
+    fxDesc.setText (info.description, juce::dontSendNotification);
+    fxControlLabel.setText (effect == snes ? "FILTER" : (effect == led ? "" : "TYPE"), juce::dontSendNotification);
+    fxControlLabel.setVisible (fxPage && effect != led);
+
+    content.resized();
+    updateEnablement();
+}
 
 void LotusEditor::paint (juce::Graphics& g)
 {
@@ -203,9 +237,8 @@ void LotusEditor::paintOverChildren (juce::Graphics& g)
     g.fillRoundedRectangle (r, 16.0f);
     g.setColour (Palette::accent);
     const float dash[] = { 8.0f, 6.0f };
-    juce::Path border;
+    juce::Path border, dashed;
     border.addRoundedRectangle (r, 16.0f);
-    juce::Path dashed;
     juce::PathStrokeType (2.0f).createDashedStroke (dashed, border, dash, 2);
     g.fillPath (dashed);
     g.setFont (font (20.0f, true));
@@ -223,7 +256,6 @@ void LotusEditor::Content::paint (juce::Graphics& g)
 {
     g.fillAll (Palette::background);
 
-    // Soft glow behind the logo
     const auto glowCentre = editor.logo.getBounds().getCentre().toFloat();
     g.setGradientFill (juce::ColourGradient (Palette::accent.withAlpha (0.10f), glowCentre,
                                              Palette::accent.withAlpha (0.0f), glowCentre.translated (220.0f, 0.0f), true));
@@ -235,7 +267,7 @@ void LotusEditor::Content::paint (juce::Graphics& g)
     g.drawText ("Lotus", logoB.getRight() + 10, logoB.getY() + 1, 200, 26, juce::Justification::centredLeft);
     g.setColour (Palette::textDim);
     g.setFont (font (12.5f));
-    g.drawText ("SoundFont player for video game music", logoB.getRight() + 11, logoB.getY() + 27, 320, 16,
+    g.drawText ("SoundFont player for video game music", logoB.getRight() + 11, logoB.getY() + 27, 300, 16,
                 juce::Justification::centredLeft);
 }
 
@@ -244,7 +276,6 @@ void LotusEditor::Content::resized()
     auto& e = editor;
     auto r = getLocalBounds().reduced (20, 16);
 
-    // Header
     auto header = r.removeFromTop (46);
     e.logo.setBounds (header.removeFromLeft (46));
     e.loadButton.setBounds (header.removeFromRight (120).withSizeKeepingCentre (120, 34));
@@ -252,7 +283,6 @@ void LotusEditor::Content::resized()
     e.pageTabs.setBounds (header.removeFromRight (190).withSizeKeepingCentre (190, 34));
     r.removeFromTop (12);
 
-    // Preset bar
     auto bar = r.removeFromTop (54);
     e.presetCard.setBounds (bar);
     auto barIn = bar.reduced (10, 10);
@@ -265,87 +295,93 @@ void LotusEditor::Content::resized()
     e.presetBox.setBounds (barIn);
     r.removeFromTop (12);
 
-    // Effects page uses the same area as the envelope + footer
+    const auto inside = [] (const Card& c) { return c.getContentBounds().translated (c.getX(), c.getY()); };
+
     {
-        auto fx = r;
-        auto snesR = fx.removeFromLeft (430);
-        fx.removeFromLeft (12);
-        auto ps1R = fx;
+        auto area = r;
+        auto footer = area.removeFromBottom (124);
+        area.removeFromBottom (12);
 
-        e.snesCard.setBounds (snesR);
-        e.snesSwitch.setBounds (snesR.getRight() - 58, snesR.getY() + 10, 44, 22);
-        auto sIn = snesR.reduced (14, 0).withTrimmedTop (40).withTrimmedBottom (12);
-        e.snesDesc.setBounds (sIn.removeFromTop (34).withTrimmedLeft (-3));
-        sIn.removeFromTop (8);
-        e.snesFilterLabel.setBounds (sIn.removeFromTop (16).withTrimmedLeft (-3));
-        sIn.removeFromTop (4);
-        e.snesFilter.setBounds (sIn.removeFromTop (32));
-        e.snesHint.setBounds (sIn.removeFromBottom (32).withTrimmedLeft (-3));
-        sIn.removeFromTop (10);
-        const int w = sIn.getWidth() / 3;
-        for (auto* k : { &e.snesDelayKnob, &e.snesFeedbackKnob, &e.snesVolumeKnob })
-            k->setBounds (sIn.removeFromLeft (w).withSizeKeepingCentre (w, juce::jmin (sIn.getHeight(), 116)));
+        e.envCard.setBounds (area);
+        auto envIn = inside (e.envCard);
+        auto knobs = envIn.removeFromRight (360);
+        envIn.removeFromRight (16);
+        e.envelopeView.setBounds (envIn);
+        const int kw = knobs.getWidth() / 4;
+        for (auto* k : { &e.attackKnob, &e.decayKnob, &e.sustainKnob, &e.releaseKnob })
+            k->setBounds (knobs.removeFromLeft (kw).withSizeKeepingCentre (kw, juce::jmin (knobs.getHeight(), 104)));
 
-        e.ps1Card.setBounds (ps1R);
-        e.ps1Switch.setBounds (ps1R.getRight() - 58, ps1R.getY() + 10, 44, 22);
-        auto pIn = ps1R.reduced (14, 0).withTrimmedTop (40).withTrimmedBottom (12);
-        e.ps1Desc.setBounds (pIn.removeFromTop (34).withTrimmedLeft (-3));
+        const int gap = 12;
+        auto consoleR = footer.removeFromLeft (250); footer.removeFromLeft (gap);
+        auto playR    = footer.removeFromLeft (216); footer.removeFromLeft (gap);
+        auto outR     = footer;
+
+        e.consoleCard.setBounds (consoleR);
+        auto cIn = inside (e.consoleCard);
+        e.consoleBox.setBounds (cIn.removeFromTop (30));
+        cIn.removeFromTop (12);
+        auto chips = cIn.removeFromTop (26);
+        e.formatChip.setBounds (chips.removeFromLeft (chips.getWidth() / 2 - 3));
+        chips.removeFromLeft (6);
+        e.voicesChip.setBounds (chips);
+
+        e.playCard.setBounds (playR);
+        auto pIn = inside (e.playCard);
+        auto row1 = pIn.removeFromTop (30);
+        e.noteOffLabel.setBounds (row1.removeFromLeft (62));
+        e.noteOffSwitch.setBounds (row1);
         pIn.removeFromTop (8);
-        e.ps1TypeLabel.setBounds (pIn.removeFromTop (16).withTrimmedLeft (-3));
-        pIn.removeFromTop (4);
-        e.ps1PresetBox.setBounds (pIn.removeFromTop (32));
-        e.ps1Hint.setBounds (pIn.removeFromBottom (32).withTrimmedLeft (-3));
-        pIn.removeFromTop (10);
-        e.ps1DepthKnob.setBounds (pIn.withSizeKeepingCentre (120, juce::jmin (pIn.getHeight(), 116)));
+        auto row2 = pIn.removeFromTop (30);
+        e.envSourceLabel.setBounds (row2.removeFromLeft (62));
+        e.envSourceSwitch.setBounds (row2);
+
+        e.outputCard.setBounds (outR);
+        auto oIn = outR.reduced (8, 10);
+        const int ow = oIn.getWidth() / 3;
+        for (auto* k : { &e.volumeKnob, &e.bendKnob, &e.glideKnob })
+            k->setBounds (oIn.removeFromLeft (ow));
     }
 
-    // Footer
-    auto footer = r.removeFromBottom (112);
-    r.removeFromBottom (12);
+    {
+        auto area = r;
+        auto listR = area.removeFromLeft (200);
+        area.removeFromLeft (12);
 
-    // Envelope
-    e.envCard.setBounds (r);
-    auto envIn = e.envCard.getContentBounds().translated (r.getX(), r.getY());
-    auto knobs = envIn.removeFromRight (360);
-    envIn.removeFromRight (16);
-    e.envelopeView.setBounds (envIn);
-    const int kw = knobs.getWidth() / 4;
-    for (auto* k : { &e.attackKnob, &e.decayKnob, &e.sustainKnob, &e.releaseKnob })
-        k->setBounds (knobs.removeFromLeft (kw).withSizeKeepingCentre (kw, juce::jmin (knobs.getHeight(), 110)));
+        e.fxListCard.setBounds (listR);
+        auto lIn = inside (e.fxListCard).withTrimmedTop (4);
+        lIn.reduce (-4, 0);
+        for (auto& row : e.fxRows)
+        {
+            row->setBounds (lIn.removeFromTop (54));
+            lIn.removeFromTop (4);
+        }
 
-    // Footer cards
-    const int gap = 12;
-    auto consoleR = footer.removeFromLeft (222);   footer.removeFromLeft (gap);
-    auto noteOffR = footer.removeFromLeft (150);   footer.removeFromLeft (gap);
-    auto envSrcR  = footer.removeFromLeft (182);   footer.removeFromLeft (gap);
-    auto outR     = footer;
+        e.fxCard.setBounds (area);
+        for (auto& sw : e.fxSwitches)
+            sw->setBounds (area.getRight() - 58, area.getY() + 10, 44, 22);
 
-    e.consoleCard.setBounds (consoleR);
-    auto cIn = e.consoleCard.getContentBounds().translated (consoleR.getX(), consoleR.getY());
-    e.consoleBox.setBounds (cIn.removeFromTop (30));
-    cIn.removeFromTop (6);
-    e.consoleDesc.setBounds (cIn.withTrimmedLeft (-3));
+        auto dIn = area.reduced (14, 0).withTrimmedTop (40).withTrimmedBottom (12);
+        e.fxDesc.setBounds (dIn.removeFromTop (36).withTrimmedLeft (-3));
+        e.fxHint.setBounds (dIn.removeFromBottom (32).withTrimmedLeft (-3));
+        dIn.removeFromTop (10);
+        e.fxControlLabel.setBounds (dIn.removeFromTop (16).withTrimmedLeft (-3));
+        dIn.removeFromTop (4);
 
-    e.noteOffCard.setBounds (noteOffR);
-    auto nIn = e.noteOffCard.getContentBounds().translated (noteOffR.getX(), noteOffR.getY());
-    e.noteOffSwitch.setBounds (nIn.removeFromTop (32));
-    nIn.removeFromTop (8);
-    e.noteOffDesc.setBounds (nIn.withTrimmedLeft (-3));
+        auto control = dIn.removeFromTop (32);
+        e.snesFilter.setBounds (control);
+        e.n64PresetBox.setBounds (control.withWidth (juce::jmin (260, control.getWidth())));
+        e.ps1PresetBox.setBounds (e.n64PresetBox.getBounds());
 
-    e.envSourceCard.setBounds (envSrcR);
-    auto sIn = e.envSourceCard.getContentBounds().translated (envSrcR.getX(), envSrcR.getY());
-    e.envSourceSwitch.setBounds (sIn.removeFromTop (32));
-    sIn.removeFromTop (8);
-    e.envSourceDesc.setBounds (sIn.withTrimmedLeft (-3));
-
-    e.outputCard.setBounds (outR);
-    auto oIn = e.outputCard.getContentBounds().translated (outR.getX(), outR.getY());
-    e.volumeKnob.setBounds (oIn.removeFromLeft (oIn.getWidth() / 2));
-    e.bendKnob.setBounds (oIn);
+        dIn.removeFromTop (8);
+        const int kh = juce::jmin (dIn.getHeight(), 112);
+        const int w = dIn.getWidth() / 3;
+        auto knobRow = dIn;
+        for (auto* k : { &e.snesDelayKnob, &e.snesFeedbackKnob, &e.snesVolumeKnob })
+            k->setBounds (knobRow.removeFromLeft (w).withSizeKeepingCentre (w, kh));
+        e.n64MixKnob.setBounds (dIn.removeFromLeft (w).withSizeKeepingCentre (w, kh));
+        e.ps1DepthKnob.setBounds (e.n64MixKnob.getBounds());
+    }
 }
-
-// ---------------------------------------------------------------------------------
-// State sync
 
 void LotusEditor::timerCallback()
 {
@@ -359,9 +395,6 @@ void LotusEditor::timerCallback()
             presetBox.setSelectedId (seenPreset + 1, juce::dontSendNotification);
     }
 
-    if ((int) processor.params.getRawParameterValue (ParamIDs::console)->load() != seenConsole)
-        updateEffectHints();
-
     const int voices = processor.getActiveVoiceCount();
     if (voices != seenVoices)
     {
@@ -369,15 +402,41 @@ void LotusEditor::timerCallback()
         refreshInfo();
     }
 
-    lotus::ui::EnvelopeView::State s;
-    auto& ps = processor.params;
-    s.attack  = ps.getRawParameterValue (ParamIDs::attack)->load();
-    s.decay   = ps.getRawParameterValue (ParamIDs::decay)->load();
-    s.sustain = ps.getRawParameterValue (ParamIDs::sustain)->load() / 100.0f;
-    s.release = ps.getRawParameterValue (ParamIDs::release)->load();
-    s.cut     = ps.getRawParameterValue (ParamIDs::noteOff)->load() > 0.5f;
-    s.sf2     = ps.getRawParameterValue (ParamIDs::envSource)->load() > 0.5f;
+    if ((int) processor.getConsole() != seenConsole || processor.isEncoding() != seenEncoding)
+        refreshConsole();
+
+    for (int i = 0; i < numEffects; ++i)
+        fxRows[(size_t) i]->setActive (param (effectInfo[i].onParam) > 0.5f);
+
+    EnvelopeView::State s;
+    s.attack  = param (ParamIDs::attack);
+    s.decay   = param (ParamIDs::decay);
+    s.sustain = param (ParamIDs::sustain) / 100.0f;
+    s.release = param (ParamIDs::release);
+    s.cut     = param (ParamIDs::noteOff) > 0.5f;
+    s.sf2     = param (ParamIDs::envSource) > 0.5f;
     envelopeView.setState (s);
+}
+
+void LotusEditor::refreshConsole()
+{
+    seenConsole = (int) processor.getConsole();
+    seenEncoding = processor.isEncoding();
+    const auto& prof = lotus::getConsoleProfile ((lotus::ConsoleId) seenConsole);
+
+    consoleBox.setTooltip (prof.description);
+
+    const bool hasCodec = prof.codec != lotus::Codec::None;
+    formatChip.setEnabled (hasCodec);
+    formatChip.setText (! hasCodec ? juce::String (prof.sampleBits == 8 ? "8-bit PCM" : "16-bit PCM")
+                                   : seenEncoding ? juce::String ("Converting...")
+                                                  : juce::String (lotus::codecName (prof.codec)) + " samples");
+
+    voicesChip.setEnabled (prof.voiceLimit > 0);
+    voicesChip.setText (prof.voiceLimit > 0 ? juce::String (prof.voiceLimit) + (prof.voiceLimit == 1 ? " voice" : " voices")
+                                            : juce::String ("Any voices"));
+
+    if (page == 1) updateEnablement();
 }
 
 void LotusEditor::refreshPresetList()
@@ -425,9 +484,6 @@ void LotusEditor::refreshPresetList()
 
 void LotusEditor::refreshInfo()
 {
-    const auto& prof = lotus::getConsoleProfile ((lotus::ConsoleId) juce::jmax (0, consoleBox.getSelectedId() - 1));
-    consoleDesc.setText (prof.description, juce::dontSendNotification);
-
     const auto* sf = processor.getSoundFont();
     if (sf == nullptr)
     {
@@ -453,21 +509,26 @@ void LotusEditor::updateEnablement()
     sustainKnob.setEnabled (! sf2Env);
     releaseKnob.setEnabled (! sf2Env && ! cut);
 
-    noteOffDesc.setText (cut ? "Notes stop the instant the key is released."
-                             : "Notes fade out over the release time.", juce::dontSendNotification);
-    const float snesAlpha = snesSwitch.isOn() ? 1.0f : 0.45f;
-    for (auto* c : std::initializer_list<juce::Component*> { &snesFilter, &snesFilterLabel, &snesDelayKnob, &snesFeedbackKnob, &snesVolumeKnob })
-        c->setAlpha (snesAlpha);
-    const float ps1Alpha = ps1Switch.isOn() ? 1.0f : 0.45f;
-    for (auto* c : std::initializer_list<juce::Component*> { &ps1PresetBox, &ps1TypeLabel, &ps1DepthKnob })
-        c->setAlpha (ps1Alpha);
+    const bool on = fxSwitches[(size_t) selectedEffect]->isOn();
+    for (auto* c : effectControls[(size_t) selectedEffect])
+        c->setAlpha (on ? 1.0f : 0.45f);
+    fxControlLabel.setAlpha (on ? 1.0f : 0.45f);
 
-    envSourceDesc.setText (sf2Env ? "Using the envelopes stored in the .sf2 file."
-                                  : "Using the ADSR knobs above.", juce::dontSendNotification);
+    const auto& info = effectInfo[selectedEffect];
+    const auto console = processor.getConsole();
+    const juce::String consoleName = lotus::getConsoleProfile (console).name;
+    juce::String hint;
+    if (selectedEffect == led)
+        hint = (console == lotus::ConsoleId::Amiga500 || console == lotus::ConsoleId::Amiga1200)
+                 ? "On top of the " + consoleName + "'s own output filtering."
+                 : "Works on any console; it's applied to the final output.";
+    else if (console == info.home)
+        hint = "Console is " + consoleName + ": running at the hardware's own rate.";
+    else
+        hint = "Console is " + consoleName + ". Times are kept; set Console to "
+             + lotus::getConsoleProfile (info.home).name + " for the authentic sound.";
+    fxHint.setText (hint, juce::dontSendNotification);
 }
-
-// ---------------------------------------------------------------------------------
-// Loading
 
 void LotusEditor::stepPreset (int delta)
 {

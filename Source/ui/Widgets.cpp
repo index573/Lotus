@@ -5,9 +5,6 @@
 namespace lotus::ui
 {
 
-// ---------------------------------------------------------------------------------
-// Logo
-
 static juce::Path makePetal (float height, float width)
 {
     juce::Path p;
@@ -43,16 +40,12 @@ void LotusLogo::paint (juce::Graphics& g)
         g.strokePath (path, juce::PathStrokeType (s * 0.025f));
     }
 
-    // Water line
     juce::Path water;
     water.startNewSubPath (base.x - s * 0.36f, base.y + s * 0.06f);
     water.quadraticTo (base.x, base.y + s * 0.16f, base.x + s * 0.36f, base.y + s * 0.06f);
     g.setColour (Palette::leaf);
     g.strokePath (water, juce::PathStrokeType (s * 0.05f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
 }
-
-// ---------------------------------------------------------------------------------
-// Card
 
 void Card::paint (juce::Graphics& g)
 {
@@ -76,9 +69,6 @@ juce::Rectangle<int> Card::getContentBounds() const
     if (title.isNotEmpty()) r.removeFromTop (18);
     return r;
 }
-
-// ---------------------------------------------------------------------------------
-// Knob
 
 Knob::Knob (juce::AudioProcessorValueTreeState& state, const juce::String& paramId, const juce::String& captionText)
     : caption (captionText)
@@ -116,9 +106,6 @@ void Knob::paint (juce::Graphics& g)
     g.setFont (font (12.0f, true));
     g.drawText (caption, getLocalBounds().removeFromTop (16), juce::Justification::centred);
 }
-
-// ---------------------------------------------------------------------------------
-// Segmented
 
 Segmented::Segmented (juce::AudioProcessorValueTreeState& state, const juce::String& paramId, juce::StringArray labelList)
     : labels (std::move (labelList))
@@ -168,9 +155,6 @@ void Segmented::mouseDown (const juce::MouseEvent& e)
     if (attachment != nullptr) attachment->setValueAsCompleteGesture ((float) idx);
     else setSelected (idx);
 }
-
-// ---------------------------------------------------------------------------------
-// Switch
 
 Switch::Switch (juce::AudioProcessorValueTreeState& state, const juce::String& paramId)
 {
@@ -260,8 +244,75 @@ void Segmented::paint (juce::Graphics& g)
     }
 }
 
-// ---------------------------------------------------------------------------------
-// Envelope view
+Chip::Chip (juce::AudioProcessorValueTreeState& state, const juce::String& paramId)
+{
+    auto* param = state.getParameter (paramId);
+    jassert (param != nullptr);
+    attachment = std::make_unique<juce::ParameterAttachment> (*param, [this] (float v)
+    {
+        on = v >= 0.5f;
+        repaint();
+    });
+    attachment->sendInitialUpdate();
+    setMouseCursor (juce::MouseCursor::PointingHandCursor);
+}
+
+void Chip::mouseDown (const juce::MouseEvent&)
+{
+    if (isEnabled()) attachment->setValueAsCompleteGesture (on ? 0.0f : 1.0f);
+}
+
+void Chip::paint (juce::Graphics& g)
+{
+    const auto r = getLocalBounds().toFloat().reduced (0.5f);
+    const float radius = r.getHeight() * 0.5f;
+    const bool lit = on && isEnabled();
+    const bool hot = isMouseOver() && isEnabled();
+
+    g.setColour (lit ? Palette::accent.withAlpha (0.16f) : (hot ? Palette::panelRaised : Palette::background));
+    g.fillRoundedRectangle (r, radius);
+    g.setColour (lit ? Palette::accent.withAlpha (0.8f) : Palette::outline);
+    g.drawRoundedRectangle (r, radius, 1.0f);
+
+    const float d = 6.0f;
+    g.setColour (lit ? Palette::accent : (isEnabled() ? Palette::textFaint : Palette::outline));
+    g.fillEllipse (r.getX() + 9.0f, r.getCentreY() - d * 0.5f, d, d);
+
+    g.setColour (lit ? Palette::text : (isEnabled() ? Palette::textDim : Palette::textFaint));
+    g.setFont (font (11.5f, true));
+    g.drawText (text, r.withTrimmedLeft (21.0f).withTrimmedRight (8.0f), juce::Justification::centredLeft);
+}
+
+EffectRow::EffectRow (juce::String n, juce::String c) : name (std::move (n)), console (std::move (c))
+{
+    setMouseCursor (juce::MouseCursor::PointingHandCursor);
+}
+
+void EffectRow::paint (juce::Graphics& g)
+{
+    const auto r = getLocalBounds().toFloat().reduced (1.0f);
+    if (selected || isMouseOver())
+    {
+        g.setColour (selected ? Palette::panelRaised : Palette::panelRaised.withAlpha (0.5f));
+        g.fillRoundedRectangle (r, 9.0f);
+    }
+    if (selected)
+    {
+        g.setColour (Palette::accent);
+        g.fillRoundedRectangle (r.withWidth (3.0f).reduced (0.0f, 9.0f), 1.5f);
+    }
+
+    const float d = 8.0f;
+    g.setColour (active ? Palette::leaf : Palette::outline.brighter (0.2f));
+    g.fillEllipse (r.getRight() - 20.0f, r.getCentreY() - d * 0.5f, d, d);
+
+    g.setColour (selected ? Palette::text : Palette::textDim);
+    g.setFont (font (14.0f, true));
+    g.drawText (name, r.withTrimmedLeft (16.0f).withHeight (r.getHeight() * 0.58f), juce::Justification::bottomLeft);
+    g.setColour (Palette::textFaint);
+    g.setFont (font (11.5f));
+    g.drawText (console, r.withTrimmedLeft (16.0f).withTrimmedTop (r.getHeight() * 0.58f), juce::Justification::topLeft);
+}
 
 void EnvelopeView::paint (juce::Graphics& g)
 {
@@ -280,7 +331,6 @@ void EnvelopeView::paint (juce::Graphics& g)
         return;
     }
 
-    // Grid
     g.setColour (Palette::outline.withAlpha (0.6f));
     for (int i = 1; i < 4; ++i)
     {
@@ -304,12 +354,10 @@ void EnvelopeView::paint (juce::Graphics& g)
     curve.startNewSubPath (x0, bottom);
     float x = x0;
 
-    // Attack (linear)
     x += wA;
     curve.lineTo (x, yFor (1.0f));
     const juce::Point<float> peak (x, yFor (1.0f));
 
-    // Decay (dB-linear towards sustain)
     const float target = juce::jmax (sus, floorLevel);
     for (int i = 1; i <= 32; ++i)
     {
@@ -319,12 +367,10 @@ void EnvelopeView::paint (juce::Graphics& g)
     x += wD;
     const juce::Point<float> decayEnd (x, yFor (sus));
 
-    // Sustain
     x += wS;
     curve.lineTo (x, yFor (sus));
     const juce::Point<float> releaseStart (x, yFor (sus));
 
-    // Release (dB-linear to silence) or cut
     if (state.cut || wR <= 0.5f)
     {
         curve.lineTo (x + 1.0f, bottom);
@@ -351,7 +397,6 @@ void EnvelopeView::paint (juce::Graphics& g)
     g.setColour (Palette::accent);
     g.strokePath (curve, juce::PathStrokeType (2.0f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
 
-    // Nodes
     for (auto p : { peak, decayEnd, releaseStart })
     {
         g.setColour (Palette::panel);
@@ -368,9 +413,6 @@ void EnvelopeView::paint (juce::Graphics& g)
     }
 
 }
-
-// ---------------------------------------------------------------------------------
-// Icon button
 
 void IconButton::paintButton (juce::Graphics& g, bool over, bool down)
 {

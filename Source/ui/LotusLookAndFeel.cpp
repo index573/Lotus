@@ -61,13 +61,11 @@ void LotusLookAndFeel::drawRotarySlider (juce::Graphics& g, int x, int y, int w,
     const bool enabled = s.isEnabled();
     const auto accent = enabled ? Palette::accent : Palette::textFaint;
 
-    // Track
     Path bg;
     bg.addCentredArc (centre.x, centre.y, arcRadius, arcRadius, 0.0f, startAngle, endAngle, true);
     g.setColour (Palette::outline);
     g.strokePath (bg, PathStrokeType (track, PathStrokeType::curved, PathStrokeType::rounded));
 
-    // Value
     const bool bipolar = s.getProperties().contains ("bipolar");
     const float zeroAngle = bipolar ? startAngle + (float) s.valueToProportionOfLength (0.0) * (endAngle - startAngle) : startAngle;
     if (std::abs (angle - zeroAngle) > 0.001f)
@@ -79,14 +77,12 @@ void LotusLookAndFeel::drawRotarySlider (juce::Graphics& g, int x, int y, int w,
         g.strokePath (arc, PathStrokeType (track, PathStrokeType::curved, PathStrokeType::rounded));
     }
 
-    // Cap
     const float capR = radius - track * 2.2f;
     g.setColour (s.isMouseOverOrDragging() && enabled ? Palette::panelRaised.brighter (0.08f) : Palette::panelRaised);
     g.fillEllipse (Rectangle<float> (capR * 2, capR * 2).withCentre (centre));
     g.setColour (Palette::outline.brighter (0.15f));
     g.drawEllipse (Rectangle<float> (capR * 2, capR * 2).withCentre (centre), 1.0f);
 
-    // Pointer dot
     const auto dot = centre.getPointOnCircumference (capR * 0.62f, angle);
     g.setColour (enabled ? Palette::text : Palette::textFaint);
     g.fillEllipse (Rectangle<float> (track, track).withCentre (dot));
@@ -114,7 +110,6 @@ void LotusLookAndFeel::drawComboBox (juce::Graphics& g, int w, int h, bool, int,
     g.setColour (box.hasKeyboardFocus (true) ? Palette::accent.withAlpha (0.6f) : Palette::outline);
     g.drawRoundedRectangle (r, 8.0f, 1.0f);
 
-    // Chevron
     const float cx = (float) w - 16.0f, cy = (float) h * 0.5f;
     Path chev;
     chev.startNewSubPath (cx - 4.0f, cy - 2.0f);

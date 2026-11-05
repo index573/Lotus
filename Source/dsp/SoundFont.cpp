@@ -12,7 +12,6 @@ namespace lotus
 namespace
 {
 
-// ---------------------------------------------------------------------------------
 // Generator operators (SF2.04 spec, section 8.1.2). Only the ones we use are named.
 enum Gen : uint16_t
 {
@@ -87,8 +86,6 @@ float timecentsToSeconds (int32_t tc)
     return (float) std::pow (2.0, tc / 1200.0);
 }
 
-// ---------------------------------------------------------------------------------
-// Little RIFF reader with bounds checking.
 struct Reader
 {
     const uint8_t* p;
@@ -119,7 +116,6 @@ struct ShdrRec { std::string name; uint32_t start, end, loopStart, loopEnd, rate
 
 } // namespace
 
-// ---------------------------------------------------------------------------------
 std::unique_ptr<SoundFont> SoundFont::loadFromFile (const std::string& path, std::string& error)
 {
     std::ifstream in (path, std::ios::binary | std::ios::ate);
@@ -145,7 +141,6 @@ std::unique_ptr<SoundFont> SoundFont::loadFromMemory (const void* data, size_t s
 
     const size_t riffEnd = std::min (size, (size_t) r.u32 (4) + 8);
 
-    // Sub-chunks we care about.
     Chunk inam, smpl, phdr, pbag, pgen, inst, ibag, igen, shdr;
 
     auto scanList = [&] (size_t from, size_t to, auto&& onChunk)
@@ -192,13 +187,11 @@ std::unique_ptr<SoundFont> SoundFont::loadFromMemory (const void* data, size_t s
     auto sf = std::make_unique<SoundFont>();
     if (inam.found) sf->name = r.str (inam.offset, inam.size);
 
-    // --- sample pool -----------------------------------------------------------
     const size_t numSamples = smpl.size / 2;
     sf->samples.resize (numSamples);
     for (size_t i = 0; i < numSamples; ++i)
         sf->samples[i] = r.s16 (smpl.offset + i * 2);
 
-    // --- hydra records ---------------------------------------------------------
     std::vector<PhdrRec> phdrs;
     for (size_t i = 0; i + 38 <= phdr.size; i += 38)
     {
@@ -251,7 +244,6 @@ std::unique_ptr<SoundFont> SoundFont::loadFromMemory (const void* data, size_t s
         return nullptr;
     }
 
-    // Collect the generators of bag `b` (bags are terminated by the next bag's index).
     auto zoneGens = [] (const std::vector<BagRec>& bags, const std::vector<GenRec>& gens, size_t b)
     {
         std::vector<GenRec> out;
@@ -262,7 +254,6 @@ std::unique_ptr<SoundFont> SoundFont::loadFromMemory (const void* data, size_t s
         return out;
     };
 
-    // --- flatten every preset ----------------------------------------------------
     for (size_t pi = 0; pi + 1 < phdrs.size(); ++pi)   // last record is the EOP terminator
     {
         Preset preset;

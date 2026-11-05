@@ -20,7 +20,8 @@ add_library(lotus_engine STATIC
     Source/dsp/SoundFont.cpp
     Source/dsp/Consoles.cpp
     Source/dsp/Synth.cpp
-    Source/dsp/Effects.cpp)
+    Source/dsp/Effects.cpp
+    Source/dsp/Codecs.cpp)
 target_include_directories(lotus_engine PUBLIC Source)
 set_target_properties(lotus_engine PROPERTIES POSITION_INDEPENDENT_CODE ON)
 if(MSVC)

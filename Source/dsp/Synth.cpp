@@ -9,7 +9,7 @@ namespace lotus
 namespace
 {
 constexpr int64_t fracOne = int64_t (1) << 32;
-constexpr double dsTimerClock = 33513982.0 / 2.0;   // 16.756991 MHz
+constexpr double dsTimerClock = 33513982.0 / 2.0;
 
 inline float hermite (float xm1, float x0, float x1, float x2, float t)
 {
@@ -40,13 +40,13 @@ void Synth::prepare (double hostSampleRate, int maxBlockSize)
     const size_t cap = (size_t) std::ceil (maxBlock * (fastest / hostRate)) + 16;
     engineL.assign (cap, 0.0f);
     engineR.assign (cap, 0.0f);
-    for (auto* b : { &engineDryL, &engineDryR, &engineWetL, &engineWetR })
+    for (auto* b : { &dryL, &dryR, &wetL, &wetR })
         b->assign (cap, 0.0f);
 
-    // Effect buffers sized for the fastest possible engine rate, so console
-    // switches never allocate on the audio thread.
-    snesEcho.prepare (std::max (hostRate, 44100.0));
-    ps1Reverb.prepare (std::max (hostRate, 44100.0));
+    // Sized for the fastest engine rate so console switches never allocate.
+    snesEcho.prepare (fastest);
+    ps1Reverb.prepare (fastest);
+    n64Reverb.prepare (fastest);
 
     allSoundOff();
     configureConsole();
@@ -61,6 +61,8 @@ void Synth::configureConsole()
     enginePhase = 0.0;
     snesEcho.setRate (engineRate);
     ps1Reverb.setRate (engineRate);
+    n64Reverb.setRate (engineRate);
+    analog.configure (hostRate, profile->lowpassHz, profile->highpassHz[0], profile->highpassHz[1]);
     std::fill (std::begin (histL), std::end (histL), 0.0f);
     std::fill (std::begin (histR), std::end (histR), 0.0f);
 }
@@ -70,6 +72,12 @@ void Synth::setSoundFont (const SoundFont* sf)
     allSoundOff();
     soundFont = sf;
     presetIndex = 0;
+}
+
+void Synth::setCodedPool (const std::vector<int16_t>* pool, Codec codec)
+{
+    codedPool = pool;
+    codedPoolCodec = pool != nullptr ? codec : Codec::None;
 }
 
 void Synth::setPresetIndex (int index)
@@ -83,16 +91,12 @@ void Synth::setParams (const EngineParams& p)
     params = p;
     if (p.console != activeConsole)
     {
-        // Envelope and pitch state is tied to the mixer rate, so a console switch
-        // restarts the engine cleanly rather than glitching sounding notes.
+        // Envelope and pitch state is tied to the mixer rate, so restart cleanly.
         activeConsole = p.console;
         allSoundOff();
         configureConsole();
     }
 }
-
-// ---------------------------------------------------------------------------------
-// MIDI
 
 void Synth::handleMidi (const uint8_t* d, int size)
 {
@@ -110,7 +114,6 @@ void Synth::handleMidi (const uint8_t* d, int size)
         case 0xC0:
             if (soundFont != nullptr)
             {
-                // GM convention: bank 128 is percussion; most SF2 drum kits live there.
                 int idx = soundFont->findPreset (bankMsb * 128 + bankLsb, d1);
                 if (idx < 0) idx = soundFont->findPreset (bankMsb, d1);
                 if (idx < 0) idx = soundFont->findPreset (0, d1);
@@ -180,6 +183,7 @@ void Synth::noteOn (int key, int velocity)
 
         startVoice (r, key, velocity, noteId);
     }
+    lastKey = key;
 }
 
 void Synth::noteOff (int key)
@@ -218,20 +222,25 @@ void Synth::allSoundOff()
 
 Synth::Voice& Synth::allocateVoice()
 {
-    for (auto& v : voices)
-        if (! v.active) return v;
+    // With the hardware limit on, a console with N voices steals once N are sounding.
+    const int limit = (params.hardwareVoices && profile->voiceLimit > 0) ? std::min (profile->voiceLimit, maxVoices) : maxVoices;
+    int sounding = 0;
+    for (auto& v : voices) sounding += v.active ? 1 : 0;
 
-    // Steal: the quietest releasing voice, otherwise the oldest.
+    if (sounding < limit)
+        for (auto& v : voices)
+            if (! v.active) return v;
+
+    // Steal the quietest releasing voice, otherwise the oldest.
     Voice* best = nullptr;
     for (auto& v : voices)
-        if (v.released && (best == nullptr || v.env.getLevel() < best->env.getLevel()))
+        if (v.active && v.released && (best == nullptr || v.env.getLevel() < best->env.getLevel()))
             best = &v;
     if (best != nullptr) return *best;
 
-    best = &voices[0];
     for (auto& v : voices)
-        if (v.age < best->age) best = &v;
-    return *best;
+        if (v.active && (best == nullptr || v.age < best->age)) best = &v;
+    return best != nullptr ? *best : voices[0];
 }
 
 void Synth::startVoice (const Region& r, int key, int velocity, uint32_t noteId)
@@ -250,9 +259,17 @@ void Synth::startVoice (const Region& r, int key, int velocity, uint32_t noteId)
     v.pos = (int64_t) r.start << 32;
 
     const int vel = r.fixedVelocity > 0 ? r.fixedVelocity : velocity;
-    const float velGain = (float) (vel * vel) / (127.0f * 127.0f);   // ~ SF2 default 40*log10 curve
+    const float velGain = (float) (vel * vel) / (127.0f * 127.0f);   // ~ the SF2 default velocity curve
     v.baseGain = r.gain * velGain;
     v.pan = r.pan;
+
+    v.glideCents = 0.0f;
+    v.glideRate = 0.0f;
+    if (params.glide > 0.0f && lastKey >= 0 && lastKey != key)
+    {
+        v.glideCents = (float) (lastKey - key) * 100.0f;
+        v.glideRate = std::abs (v.glideCents) / (float) (params.glide * engineRate);
+    }
 
     Envelope::Params ep;
     if (params.useSf2Envelope)
@@ -283,8 +300,9 @@ void Synth::updatePitch (Voice& v) const
 {
     const Region& r = *v.region;
     const double cents = (v.pitchKey - r.rootKey) * (double) r.scaleTuning + r.tuneCents
-                       + (double) pitchBend * params.bendRange * 100.0;
-    const double playbackHz = r.sampleRate * std::pow (2.0, cents / 1200.0);
+                       + (double) pitchBend * params.bendRange * 100.0 + v.glideCents;
+    const double rel = std::pow (2.0, cents / 1200.0);
+    const double playbackHz = r.sampleRate * rel;
 
     double ratio = 0.0;  // source samples per engine sample
     switch (profile->pitch)
@@ -295,9 +313,11 @@ void Synth::updatePitch (Voice& v) const
 
         case PitchMode::Fixed4p12:
         {
-            int64_t reg = std::llround (playbackHz / engineRate * 4096.0);
-            reg = std::clamp<int64_t> (reg, 0, (int64_t) profile->maxStep4p12);
-            v.step = reg << 20;   // 4.12 -> 32.32, keeps the exact hardware step
+            // Pitch ceilings apply to the sample as a developer would have converted it
+            // (to the mixer rate), i.e. relative to the root note.
+            const double capped = std::min (rel, profile->maxStep4p12 / 4096.0);
+            const int64_t reg = std::llround (capped * r.sampleRate / engineRate * 4096.0);
+            v.step = std::max<int64_t> (0, reg) << 20;
             return;
         }
 
@@ -307,20 +327,63 @@ void Synth::updatePitch (Voice& v) const
             ratio = (dsTimerClock / (double) timer) / engineRate;
             break;
         }
+
+        case PitchMode::N64Q15:
+        {
+            // libultra caps the ratio just under 2.0 and truncates it to Q1.15.
+            const double capped = std::min (rel, 1.99996) * r.sampleRate / engineRate;
+            ratio = std::floor (capped * 32768.0) / 32768.0;
+            break;
+        }
+
+        case PitchMode::AmigaPeriod:
+        {
+            // Pitch snaps to integer periods. Above Paula's fastest rate the pitch is
+            // kept and the sample effectively plays decimated.
+            const int64_t period = std::clamp<int64_t> (std::llround (amigaPalClock / std::max (1.0, playbackHz)), 113, 65535);
+            const double hz = period == 113 ? playbackHz : amigaPalClock / (double) period;
+            ratio = hz / engineRate;
+            break;
+        }
+
+        case PitchMode::NesDmc:
+        {
+            // The sample is treated as already converted to the fastest DMC rate; notes
+            // snap to whichever of the 16 rates is nearest.
+            const double fastest = nesCpuClock / nesDmcPeriods[15];
+            const double target = fastest * rel;
+            int best = 15;
+            for (int k = 0; k < 16; ++k)
+                if (std::abs (std::log (nesCpuClock / nesDmcPeriods[k] / target))
+                    < std::abs (std::log (nesCpuClock / nesDmcPeriods[best] / target)))
+                    best = k;
+            ratio = r.sampleRate * (nesCpuClock / nesDmcPeriods[best] / fastest) / engineRate;
+            break;
+        }
+
+        case PitchMode::ScspOctFns:
+        {
+            const double want = std::max (1e-6, playbackHz / 44100.0);
+            int oct = (int) std::floor (std::log2 (want));
+            int fns = (int) std::lround ((want / std::ldexp (1.0, oct) - 1.0) * 1024.0);
+            if (fns >= 1024) { fns = 0; ++oct; }
+            if (oct < -8) { oct = -8; fns = 0; }
+            if (oct > 7)  { oct = 7; fns = 1023; }
+            ratio = std::ldexp (1.0 + fns / 1024.0, oct) * 44100.0 / engineRate;
+            break;
+        }
     }
 
     ratio = std::clamp (ratio, 0.0, 256.0);
     v.step = (int64_t) (ratio * (double) fracOne);
 }
 
-// ---------------------------------------------------------------------------------
-// Rendering
-
 template <Interp interp>
 void Synth::renderVoice (Voice& v, float* outL, float* outR, int n, float gainL, float gainR)
 {
     const Region& r = *v.region;
-    const int16_t* pool = soundFont->samples.data();
+    const bool coded = codedPool != nullptr && codedPoolCodec == profile->codec && params.nativeFormat;
+    const int16_t* pool = coded ? codedPool->data() : soundFont->samples.data();
     const int64_t start = r.start, end = r.end, loopStart = r.loopStart, loopEnd = r.loopEnd;
     const int64_t loopLen = loopEnd - loopStart;
     const bool eightBit = profile->sampleBits == 8;
@@ -362,10 +425,16 @@ void Synth::renderVoice (Voice& v, float* outL, float* outR, int n, float gainL,
             s = hermite ((float) fetch (idx - 1), (float) fetch (idx), (float) fetch (idx + 1), (float) fetch (idx + 2), t)
                 * (1.0f / 32768.0f);
         }
+        else if constexpr (interp == Interp::N64Poly)
+        {
+            // Top 6 bits of the fraction pick one of 64 phases.
+            const int16_t* c = n64ResampleTable().data() + ((frac >> 26) << 2);
+            const int out = (fetch (idx - 1) * c[0] + fetch (idx) * c[1] + fetch (idx + 1) * c[2] + fetch (idx + 2) * c[3]) >> 15;
+            s = (float) std::clamp (out, -32768, 32767) * (1.0f / 32768.0f);
+        }
         else
         {
-            // 4-tap Gaussian, as the hardware does it: bits 4..11 of the 12-bit pitch
-            // counter fraction pick the coefficients; integer maths with per-tap shifts.
+            // Bits 4..11 of the 12-bit pitch fraction pick the Gaussian coefficients.
             const auto& g = interp == Interp::SnesGauss ? snesGaussTable() : ps1GaussTable();
             constexpr int shift = interp == Interp::SnesGauss ? 11 : 15;
             const int gi = (int) (frac >> 24);
@@ -409,27 +478,39 @@ void Synth::renderEngine (float* outL, float* outR, int n)
     if (soundFont == nullptr) { applyEffectsAndOutputStage (outL, outR, n); return; }
 
     const float channelGain = params.masterGain * ccVolume * ccExpression;
+    constexpr int chunk = 32;   // pitch (bend, glide) is updated this often
     int count = 0;
 
     for (auto& v : voices)
     {
         if (! v.active) continue;
 
-        updatePitch (v);   // picks up pitch bend
-
-        // Balance pan law: centre is unity, hard-panned stereo pairs stay at unity.
         const float p = std::clamp (v.pan + ccPan, -1.0f, 1.0f);
         const float g = v.baseGain * channelGain;
-        const float gl = g * std::min (1.0f, 1.0f - p);
+        const float gl = g * std::min (1.0f, 1.0f - p);   // balance law: centre = unity
         const float gr = g * std::min (1.0f, 1.0f + p);
 
-        switch (profile->interp)
+        for (int done = 0; done < n && v.active; done += chunk)
         {
-            case Interp::Nearest:   renderVoice<Interp::Nearest>   (v, outL, outR, n, gl, gr); break;
-            case Interp::Linear:    renderVoice<Interp::Linear>    (v, outL, outR, n, gl, gr); break;
-            case Interp::Hermite:   renderVoice<Interp::Hermite>   (v, outL, outR, n, gl, gr); break;
-            case Interp::SnesGauss: renderVoice<Interp::SnesGauss> (v, outL, outR, n, gl, gr); break;
-            case Interp::Ps1Gauss:  renderVoice<Interp::Ps1Gauss>  (v, outL, outR, n, gl, gr); break;
+            const int len = std::min (chunk, n - done);
+            updatePitch (v);
+
+            switch (profile->interp)
+            {
+                case Interp::Nearest:   renderVoice<Interp::Nearest>   (v, outL + done, outR + done, len, gl, gr); break;
+                case Interp::Linear:    renderVoice<Interp::Linear>    (v, outL + done, outR + done, len, gl, gr); break;
+                case Interp::Hermite:   renderVoice<Interp::Hermite>   (v, outL + done, outR + done, len, gl, gr); break;
+                case Interp::SnesGauss: renderVoice<Interp::SnesGauss> (v, outL + done, outR + done, len, gl, gr); break;
+                case Interp::Ps1Gauss:  renderVoice<Interp::Ps1Gauss>  (v, outL + done, outR + done, len, gl, gr); break;
+                case Interp::N64Poly:   renderVoice<Interp::N64Poly>   (v, outL + done, outR + done, len, gl, gr); break;
+            }
+
+            if (v.glideCents != 0.0f)
+            {
+                const float stepCents = v.glideRate * (float) len;
+                v.glideCents = v.glideCents > 0.0f ? std::max (0.0f, v.glideCents - stepCents)
+                                                   : std::min (0.0f, v.glideCents + stepCents);
+            }
         }
 
         if (v.active) ++count;
@@ -441,36 +522,40 @@ void Synth::renderEngine (float* outL, float* outR, int n)
 
 void Synth::applyEffectsAndOutputStage (float* outL, float* outR, int n)
 {
-    // Console effects are fed from the voice mix and added back to it, as on the
-    // hardware (where echo/reverb returns are summed with the dry voices).
-    if (params.fx.snesEcho || params.fx.ps1Reverb)
-    {
-        // Run both from the same dry signal, then sum, so they're parallel sends.
-        float* dryL = engineDryL.data();
-        float* dryR = engineDryR.data();
-        std::copy (outL, outL + n, dryL);
-        std::copy (outR, outR + n, dryR);
+    const auto& fx = params.fx;
 
-        if (params.fx.snesEcho)
+    // Effects are parallel sends fed from the dry voice mix, summed back in.
+    if (fx.snesEcho || fx.ps1Reverb || fx.n64Reverb)
+    {
+        std::copy (outL, outL + n, dryL.data());
+        std::copy (outR, outR + n, dryR.data());
+
+        if (fx.snesEcho)
         {
             if (! echoWasOn) snesEcho.reset();
-            snesEcho.process (outL, outR, n, params.fx);
+            snesEcho.process (outL, outR, n, fx);
         }
-        if (params.fx.ps1Reverb)
-        {
-            if (! reverbWasOn) ps1Reverb.reset();
-            float* wetL = engineWetL.data();
-            float* wetR = engineWetR.data();
-            std::copy (dryL, dryL + n, wetL);
-            std::copy (dryR, dryR + n, wetR);
-            ps1Reverb.process (wetL, wetR, n, params.fx);
-            for (int i = 0; i < n; ++i) { outL[i] += wetL[i] - dryL[i]; outR[i] += wetR[i] - dryR[i]; }
-        }
-    }
-    echoWasOn = params.fx.snesEcho;
-    reverbWasOn = params.fx.ps1Reverb;
 
-    // Hardware output stage: fixed bit depth with hard clipping.
+        auto addSend = [&] (auto& effect, bool& wasOn)
+        {
+            if (! wasOn) effect.reset();
+            std::copy (dryL.data(), dryL.data() + n, wetL.data());
+            std::copy (dryR.data(), dryR.data() + n, wetR.data());
+            effect.process (wetL.data(), wetR.data(), n, fx);
+            for (int i = 0; i < n; ++i)
+            {
+                outL[i] += wetL[(size_t) i] - dryL[(size_t) i];
+                outR[i] += wetR[(size_t) i] - dryR[(size_t) i];
+            }
+        };
+        if (fx.ps1Reverb) addSend (ps1Reverb, ps1WasOn);
+        if (fx.n64Reverb) addSend (n64Reverb, n64WasOn);
+    }
+    echoWasOn = fx.snesEcho;
+    ps1WasOn = fx.ps1Reverb;
+    n64WasOn = fx.n64Reverb;
+
+    // Output stage: fixed bit depth with hard clipping.
     if (profile->outputBits > 0)
     {
         const float q = (float) (1 << (profile->outputBits - 1));
@@ -478,6 +563,18 @@ void Synth::applyEffectsAndOutputStage (float* outL, float* outR, int n)
         {
             outL[i] = std::clamp (std::floor (outL[i] * q + 0.5f), -q, q - 1.0f) / q;
             outR[i] = std::clamp (std::floor (outR[i] * q + 0.5f), -q, q - 1.0f) / q;
+        }
+    }
+
+    // Discrete YM2612: the 9-bit DAC steps by +4 at or above zero and -3 below it,
+    // a dead zone around zero crossings. The constant +4 at rest is removed.
+    if (profile->ym2612Ladder)
+    {
+        constexpr float below = -7.0f / 256.0f;
+        for (int i = 0; i < n; ++i)
+        {
+            if (outL[i] < 0.0f) outL[i] += below;
+            if (outR[i] < 0.0f) outR[i] += below;
         }
     }
 }
@@ -507,7 +604,7 @@ void Synth::render (float* left, float* right, int numSamples)
             needed = std::min (needed, (int) engineL.size());
             renderEngine (engineL.data(), engineR.data(), needed);
 
-            // Reconstruct at the host rate (4-point Hermite between the two middle points).
+            // Reconstruct at the host rate: sample-and-hold, or Hermite between the middle points.
             int consumed = 0;
             for (int i = 0; i < n; ++i)
             {
@@ -521,11 +618,21 @@ void Synth::render (float* left, float* right, int numSamples)
                     histL[0] = histL[1]; histL[1] = histL[2]; histL[2] = histL[3]; histL[3] = nl;
                     histR[0] = histR[1]; histR[1] = histR[2]; histR[2] = histR[3]; histR[3] = nr;
                 }
-                const float t = (float) enginePhase;
-                left[i]  = hermite (histL[0], histL[1], histL[2], histL[3], t);
-                right[i] = hermite (histR[0], histR[1], histR[2], histR[3], t);
+                if (profile->holdOutput)
+                {
+                    left[i]  = histL[3];
+                    right[i] = histR[3];
+                }
+                else
+                {
+                    const float t = (float) enginePhase;
+                    left[i]  = hermite (histL[0], histL[1], histL[2], histL[3], t);
+                    right[i] = hermite (histR[0], histR[1], histR[2], histR[3], t);
+                }
             }
         }
+
+        analog.process (left, right, n, params.fx.ledFilter);
 
         left += n; right += n; numSamples -= n;
     }

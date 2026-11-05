@@ -1,4 +1,5 @@
 #include "Effects.h"
+#include "Consoles.h"
 
 #include <algorithm>
 #include <cmath>
@@ -58,13 +59,30 @@ constexpr int ps1Fir[39] =
 };
 
 constexpr uint32_t ps1MaxSizeBytes = 0x18040;
+
+// libultra effect presets (drvrnew.c). Times are in samples at 40 per "ms".
+struct N64Section { int input, output, fbcoef, ffcoef, gain, chorusRate, chorusDepth, fc; };
+struct N64Preset { const char* name; int length; int count; N64Section s[4]; };
+constexpr int ms = 40;
+const N64Preset n64Presets[numN64FxPresets] =
+{
+    { "Small Room", 100 * ms, 3, { { 0, 54 * ms, 9830, -9830, 0, 0, 0, 0 },
+                                   { 19 * ms, 38 * ms, 3276, -3276, 0x3fff, 0, 0, 0 },
+                                   { 0, 60 * ms, 5000, 0, 0, 0, 0, 0x5000 } } },
+    { "Big Room", 100 * ms, 4, { { 0, 66 * ms, 9830, -9830, 0, 0, 0, 0 },
+                                 { 22 * ms, 54 * ms, 3276, -3276, 0x3fff, 0, 0, 0 },
+                                 { 66 * ms, 91 * ms, 3276, -3276, 0x3fff, 0, 0, 0 },
+                                 { 0, 94 * ms, 8000, 0, 0, 0, 0, 0x5000 } } },
+    { "Echo", 200 * ms, 1, { { 0, 179 * ms, 12000, 0, 0x7fff, 0, 0, 0 } } },
+    { "Chorus", 20 * ms, 1, { { 0, 5 * ms, 0x4000, 0, 0x7fff, 7600, 700, 0 } } },
+    { "Flange", 20 * ms, 1, { { 0, 5 * ms, 0, 0x5fff, 0x7fff, 380, 500, 0 } } },
+};
+constexpr int n64MaxLength = 200 * ms;
 } // namespace
 
 const char* snesFirPresetName (int i)   { return snesFirNames[std::clamp (i, 0, numSnesFirPresets - 1)]; }
 const char* ps1ReverbPresetName (int i) { return ps1Presets[std::clamp (i, 0, numPs1ReverbPresets - 1)].name; }
-
-// ---------------------------------------------------------------------------------
-// SNES echo
+const char* n64FxPresetName (int i)     { return n64Presets[std::clamp (i, 0, numN64FxPresets - 1)].name; }
 
 void SnesEcho::prepare (double maxRate)
 {
@@ -130,16 +148,12 @@ void SnesEcho::process (float* l, float* r, int n, const EffectParams& p)
         bufL[(size_t) offset] = (int16_t) (clamp16 (dryL + wrap16 ((firL * efb) >> 7)) & ~1);
         bufR[(size_t) offset] = (int16_t) (clamp16 (dryR + wrap16 ((firR * efb) >> 7)) & ~1);
 
-        // Echo return into the main output.
         l[i] += (float) wrap16 ((firL * evol) >> 7) * (1.0f / 32768.0f);
         r[i] += (float) wrap16 ((firR * evol) >> 7) * (1.0f / 32768.0f);
 
         if (++offset >= length) offset = 0;
     }
 }
-
-// ---------------------------------------------------------------------------------
-// PS1 reverb
 
 void Ps1Reverb::prepare (double maxRate)
 {
@@ -282,6 +296,196 @@ void Ps1Reverb::process (float* l, float* r, int n, const EffectParams& p)
 
         l[i] += (float) ((wetL * evol) >> 15) * (1.0f / 32768.0f);
         r[i] += (float) ((wetR * evol) >> 15) * (1.0f / 32768.0f);
+    }
+}
+
+// N64 reverb (libultra alFxPull): one delay line, sections of feed-forward /
+// feedback pairs with optional one-pole low-pass and modulated (chorus) taps.
+
+void N64Reverb::prepare (double maxRate)
+{
+    line.assign ((size_t) std::ceil (n64MaxLength * std::max (1.0, maxRate / 32000.0)) + 8, 0);
+    currentPreset = -1;
+    reset();
+}
+
+void N64Reverb::setRate (double rate)
+{
+    engineRate = rate;
+    rateScale = rate / 32000.0;
+    currentPreset = -1;
+    reset();
+}
+
+void N64Reverb::reset()
+{
+    std::fill (line.begin(), line.end(), (int16_t) 0);
+    pos = 0;
+    for (auto& s : sections) { s.rsval = 1.0; s.rsdelta = 0.0; s.lpState = 0; }
+}
+
+void N64Reverb::loadPreset (int index)
+{
+    const auto& p = n64Presets[std::clamp (index, 0, numN64FxPresets - 1)];
+    auto scaled = [this] (int samples) { return (int) std::lround (samples * rateScale); };
+
+    length = std::clamp (scaled (p.length), 8, (int) line.size());
+    numSections = p.count;
+    for (int i = 0; i < p.count; ++i)
+    {
+        const auto& src = p.s[i];
+        auto& d = sections[(size_t) i];
+        d = Section {};
+        d.input = std::min (scaled (src.input), length - 1);
+        d.output = std::min (scaled (src.output), length - 1);
+        d.fbcoef = src.fbcoef;
+        d.ffcoef = src.ffcoef;
+        d.gain = src.gain;
+        d.chorus = src.chorusRate != 0;
+        if (d.chorus)
+        {
+            d.rsinc = ((src.chorusRate / 1000.0) * 2.0) / engineRate;
+            d.rsgain = src.chorusDepth / 173123.404906676;   // hundredths of a cent -> ln(ratio)
+        }
+        d.lowpass = src.fc != 0;
+        if (d.lowpass)
+        {
+            const int fc = (src.fc * 16384) >> 15;
+            d.lpCoef = fc;
+            d.lpGain = 16384 - fc;
+        }
+    }
+    currentPreset = index;
+    reset();
+}
+
+int16_t& N64Reverb::at (int delay)
+{
+    int i = (pos - delay) % length;
+    if (i < 0) i += length;
+    return line[(size_t) i];
+}
+
+float N64Reverb::readFrac (double delay)
+{
+    const double p = (double) pos - delay;
+    const double fl = std::floor (p);
+    const int idx = (int) fl;
+    const auto frac = (uint32_t) ((p - fl) * 65536.0);
+    const int16_t* c = n64ResampleTable().data() + ((frac >> 10) << 2);
+    auto tap = [this] (int i) { int k = i % length; if (k < 0) k += length; return (int) line[(size_t) k]; };
+    const int out = (tap (idx - 1) * c[0] + tap (idx) * c[1] + tap (idx + 1) * c[2] + tap (idx + 2) * c[3]) >> 15;
+    return (float) clamp16 (out);
+}
+
+void N64Reverb::process (float* l, float* r, int n, const EffectParams& p)
+{
+    if (line.empty()) return;
+    if (p.n64Preset != currentPreset) loadPreset (p.n64Preset);
+    const float mix = std::clamp (p.n64Mix, 0.0f, 1.0f);
+
+    for (int i = 0; i < n; ++i)
+    {
+        // Aux bus: 0.707 L + 0.707 R into the line.
+        at (0) = (int16_t) toInt16 ((l[i] + r[i]) * 0.70710678f * mix);
+
+        int out = 0;
+        for (int k = 0; k < numSections; ++k)
+        {
+            auto& d = sections[(size_t) k];
+            int b1 = at (d.input);
+            int b2;
+            if (d.chorus)
+            {
+                d.rsval += d.rsinc;
+                if (d.rsval > 2.0) d.rsval -= 4.0;
+                const double tri = std::abs (d.rsval) - 1.0;
+                d.rsdelta -= d.rsgain * tri;
+                b2 = (int) readFrac (d.output - d.rsdelta);
+            }
+            else
+            {
+                b2 = at (d.output);
+            }
+
+            if (d.ffcoef != 0) b2 = clamp16 (b2 + ((b1 * d.ffcoef) >> 15));
+            if (d.fbcoef != 0)
+            {
+                b1 = clamp16 (b1 + ((b2 * d.fbcoef) >> 15));
+                at (d.input) = (int16_t) b1;
+            }
+            if (d.lowpass)
+            {
+                d.lpState = clamp16 ((b2 * d.lpGain + d.lpState * d.lpCoef) >> 14);
+                b2 = d.lpState;
+            }
+            if (! d.chorus) at (d.output) = (int16_t) b2;
+            if (d.gain != 0) out = clamp16 (out + ((b2 * d.gain) >> 15));
+        }
+
+        const float wet = (float) out * (1.0f / 32768.0f);
+        l[i] += wet;
+        r[i] += wet;
+        if (++pos >= length) pos = 0;
+    }
+}
+
+void AnalogStage::configure (double fs, float lowpassHz, float hp1Hz, float hp2Hz)
+{
+    const double nyq = fs * 0.5;
+    auto onePole = [&] (OnePole& f, float hz)
+    {
+        f = OnePole {};
+        f.on = hz > 0.0f && hz < nyq * 0.98;
+        if (f.on) f.a = (float) (1.0 - std::exp (-2.0 * 3.14159265358979323846 * hz / fs));
+    };
+    onePole (lp, lowpassHz);
+    onePole (hp1, hp1Hz);
+    onePole (hp2, hp2Hz);
+
+    // Amiga LED filter: 2-pole Sallen-Key, R1=R2=10k, C1=6800pF, C2=3900pF
+    // (fc ~3090.5 Hz, Q ~0.660), as an RBJ biquad.
+    const double f0 = 3090.533, q = 0.660225;
+    const double w0 = 2.0 * 3.14159265358979323846 * std::min (f0, nyq * 0.95) / fs;
+    const double alpha = std::sin (w0) / (2.0 * q), cw = std::cos (w0), a0 = 1.0 + alpha;
+    led = Biquad {};
+    led.b0 = (float) (((1.0 - cw) * 0.5) / a0);
+    led.b1 = (float) ((1.0 - cw) / a0);
+    led.b2 = led.b0;
+    led.a1 = (float) ((-2.0 * cw) / a0);
+    led.a2 = (float) ((1.0 - alpha) / a0);
+}
+
+void AnalogStage::process (float* l, float* r, int n, bool ledFilter)
+{
+    if (ledFilter != ledWasOn) { led.l1 = led.l2 = led.r1 = led.r2 = 0.0f; ledWasOn = ledFilter; }
+
+    for (int i = 0; i < n; ++i)
+    {
+        float x = l[i], y = r[i];
+        if (lp.on)
+        {
+            lp.zl += lp.a * (x - lp.zl); x = lp.zl;
+            lp.zr += lp.a * (y - lp.zr); y = lp.zr;
+        }
+        for (auto* hp : { &hp1, &hp2 })
+        {
+            if (! hp->on) continue;
+            hp->zl += hp->a * (x - hp->zl); x -= hp->zl;
+            hp->zr += hp->a * (y - hp->zr); y -= hp->zr;
+        }
+        if (ledFilter)
+        {
+            const float ox = led.b0 * x + led.l1;
+            led.l1 = led.b1 * x - led.a1 * ox + led.l2;
+            led.l2 = led.b2 * x - led.a2 * ox;
+            const float oy = led.b0 * y + led.r1;
+            led.r1 = led.b1 * y - led.a1 * oy + led.r2;
+            led.r2 = led.b2 * y - led.a2 * oy;
+            x = ox; y = oy;
+        }
+        l[i] = x;
+        r[i] = y;
     }
 }
 

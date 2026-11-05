@@ -2,20 +2,15 @@
 
 ## JUCE
 
-Lotus is built with [JUCE](https://juce.com), which is dual-licensed under the
-AGPLv3 and the commercial JUCE licence. Distributing Lotus binaries requires
-complying with one of those licences.
+Lotus is built with [JUCE](https://juce.com), which is dual-licensed under the AGPLv3 and the commercial JUCE licence. Distributing Lotus binaries means complying with one of those licences.
 
-## clap-juce-extensions / CLAP SDK
+## clap-juce-extensions and the CLAP SDK
 
-The CLAP build uses [clap-juce-extensions](https://github.com/free-audio/clap-juce-extensions)
-(MIT licence) and the [CLAP SDK](https://github.com/free-audio/clap) (MIT licence),
-fetched at build time.
+The CLAP build uses [clap-juce-extensions](https://github.com/free-audio/clap-juce-extensions) and the [CLAP SDK](https://github.com/free-audio/clap), both MIT-licensed and fetched at build time.
 
-## ares (SNES S-DSP Gaussian table construction)
+## ares (SNES Gaussian table)
 
-`Source/dsp/Consoles.cpp` contains the routine that generates the SNES S-DSP
-Gaussian interpolation table, adapted from ares (`ares/sfc/dsp/gaussian.cpp`):
+`Source/dsp/Consoles.cpp` generates the S-DSP Gaussian interpolation table with a routine adapted from ares (`ares/sfc/dsp/gaussian.cpp`):
 
 ```
 Copyright (c) 2004-2025 ares team, Near et al
@@ -33,10 +28,26 @@ ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
 OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 ```
 
-## psx-spx (PS1 SPU Gaussian table)
+The BRR decoder in `Source/dsp/Codecs.cpp` follows the integer steps of ares' `brr.cpp`.
 
-The PS1 SPU Gaussian interpolation table values are taken from the
-[psx-spx](https://psx-spx.consoledev.net/) hardware documentation
-("Sound Processing Unit (SPU)" → "4-Point Gaussian Interpolation"). The PS1
-reverb algorithm, its 39-tap resampling filter and the reverb preset register
-values are from the same document ("SPU Reverb Formula", "SPU Reverb Examples").
+## psx-spx (PS1 tables and reverb)
+
+The SPU Gaussian table, the reverb algorithm, its 39-tap resampling filter, the reverb preset registers and the SPU-ADPCM filter coefficients come from the [psx-spx](https://psx-spx.consoledev.net/) hardware documentation.
+
+## mupen64plus-rsp-hle (N64 resampler table)
+
+The 64×4 RSP resampler coefficient table in `Source/dsp/Consoles.cpp` is the `RESAMPLE_LUT` table from [mupen64plus-rsp-hle](https://github.com/mupen64plus/mupen64plus-rsp-hle) (`src/audio.c`, Copyright (C) 2014 Bobby Smiles, GPL-2.0-or-later). It reproduces constants used by Nintendo's audio microcode.
+
+## N64 effect presets
+
+The five N64 effect presets (section delays, coefficients, chorus rate/depth and filter values) and the effect-bus algorithm follow libultra, as documented by the [ultralib](https://github.com/decompals/ultralib) decompilation (`src/audio/drvrnew.c`, `src/audio/reverb.c`). Lotus contains its own implementation; only the numeric preset values are reproduced.
+
+## Hardware constants
+
+These figures were checked against the following projects and documents. No code was copied from them:
+
+- Amiga Paula clock, minimum period and the A500/A1200/LED filter component values: [pt2-clone](https://github.com/8bitbubsy/pt2-clone) (`pt2_paula.c`).
+- YM2612 DAC ladder offsets: [Genesis Plus GX](https://github.com/ekeeke/Genesis-Plus-GX) (`core/sound/ym2612.c`). Mega Drive model 1 low-pass (10 kΩ / 5600 pF, 2842 Hz): [clownmdemu](https://github.com/Clownacy/clownmdemu-core).
+- NES DMC rate table and APU output filters: the [NESdev wiki](https://www.nesdev.org/wiki/APU_DMC).
+- SCSP/AICA interpolation and pitch format: [MAME](https://github.com/mamedev/mame) (`scsp.cpp`, `aica.cpp`).
+- DS timer clock and mixer rate: GBATEK.

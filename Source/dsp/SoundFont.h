@@ -1,12 +1,7 @@
 #pragma once
 
-// Lotus - SoundFont 2 (.sf2) loader.
-//
-// Deliberately framework-free (no JUCE) so the parser and the synth engine can be
-// unit-tested headlessly. The loader flattens the SF2 preset -> instrument -> sample
-// hierarchy into a simple list of playable "regions" per preset, resolving global
-// zones, generator defaults and the preset-level (additive) generators up front so
-// the audio thread never has to walk the hierarchy.
+// SoundFont 2 loader. Flattens presets -> instruments -> samples into a list of
+// playable regions per preset, so the audio thread never walks the hierarchy.
 
 #include <cstdint>
 #include <memory>
