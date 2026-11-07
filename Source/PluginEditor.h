@@ -48,6 +48,8 @@ private:
     void loadFile (const juce::File&);
     void stepPreset (int delta);
     float param (const char* id) const;
+    void updateSongMeter();
+    void showVerdict();
 
     LotusProcessor& processor;
     lotus::ui::LotusLookAndFeel lnf;
@@ -74,6 +76,9 @@ private:
     juce::ComboBox consoleBox;
     std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment> consoleAttachment;
     lotus::ui::Chip formatChip, voicesChip;
+    lotus::ui::SongMeter songMeter;
+    lotus::ui::VerdictPopup verdict;
+    double overUntilMs = 0.0;
 
     lotus::ui::Card playCard { "Playback" };
     juce::Label noteOffLabel, envSourceLabel;

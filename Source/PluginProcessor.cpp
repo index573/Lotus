@@ -120,6 +120,8 @@ LotusProcessor::LotusProcessor()
         jassert (raw[id] != nullptr);
     }
 
+    registrySlot = lotus::VoiceRegistry::get().join();
+
     startTimerHz (5);
 }
 
@@ -127,6 +129,7 @@ LotusProcessor::~LotusProcessor()
 {
     stopTimer();
     stopEncoding();
+    lotus::VoiceRegistry::get().leave (registrySlot);
 }
 
 float LotusProcessor::value (const char* id) const
@@ -222,6 +225,9 @@ void LotusProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiB
     }
     if (pos < numSamples)
         synth.render (left + pos, right + pos, numSamples - pos);
+
+    songVoices.store (lotus::VoiceRegistry::get().publish (registrySlot, p.console, synth.getActiveVoiceCount()),
+                      std::memory_order_relaxed);
 
     if (! stereo)
     {

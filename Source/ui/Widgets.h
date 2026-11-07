@@ -117,6 +117,46 @@ private:
     bool selected = false, active = false;
 };
 
+/** Song-wide voice light: green, amber at the limit, red over it (held for a moment). */
+class SongMeter final : public juce::Component, public juce::SettableTooltipClient
+{
+public:
+    SongMeter() { setMouseCursor (juce::MouseCursor::PointingHandCursor); }
+    void setState (int voices, int limit, bool overHeld);
+    void paint (juce::Graphics&) override;
+    void mouseDown (const juce::MouseEvent&) override { if (onClick) onClick(); }
+    void mouseEnter (const juce::MouseEvent&) override { repaint(); }
+    void mouseExit (const juce::MouseEvent&) override { repaint(); }
+    std::function<void()> onClick;
+
+private:
+    int voices = 0, limit = 0;
+    bool overHeld = false;
+};
+
+/** "This song takes N consoles to run" card, drawn over the whole window. */
+class VerdictPopup final : public juce::Component, private juce::Timer
+{
+public:
+    VerdictPopup();
+    void show (int consoles, const juce::String& title, const juce::String& detail);
+    void paint (juce::Graphics&) override;
+    void resized() override;
+    void mouseDown (const juce::MouseEvent&) override;
+
+    std::function<void()> onReset;
+
+private:
+    void timerCallback() override { phase += 0.12f; repaint (panelBounds()); }
+    juce::Rectangle<int> panelBounds() const;
+    static void drawConsole (juce::Graphics&, juce::Rectangle<float>, int mood);
+
+    int count = 1;
+    float phase = 0.0f;
+    juce::String title, detail;
+    juce::TextButton resetButton { "Reset peak" }, closeButton { "Nice!" };
+};
+
 /** Live drawing of the envelope that will actually be applied. */
 class EnvelopeView final : public juce::Component
 {

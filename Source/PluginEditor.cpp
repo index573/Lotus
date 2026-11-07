@@ -25,6 +25,38 @@ const EffectInfo effectInfo[] =
       "The Amiga's switchable 12 dB/oct low-pass at about 3.1 kHz. It was wired to the power LED, and games and trackers flicked it on for a darker sound." },
 };
 
+// Singular and plural names for the verdict popup.
+juce::String consoleNoun (lotus::ConsoleId id, bool plural)
+{
+    using C = lotus::ConsoleId;
+    switch (id)
+    {
+        case C::Nes:        return plural ? "NESes" : "NES";
+        case C::Snes:       return plural ? "SNESes" : "SNES";
+        case C::N64:        return plural ? "N64s" : "N64";
+        case C::Gba:        return plural ? "GBAs" : "GBA";
+        case C::NintendoDs: return plural ? "Nintendo DSes" : "Nintendo DS";
+        case C::Ps1:        return plural ? "PS1s" : "PS1";
+        case C::Ps2:        return plural ? "PS2s" : "PS2";
+        case C::MegaDrive:  return plural ? "Mega Drives" : "Mega Drive";
+        case C::Saturn:     return plural ? "Saturns" : "Saturn";
+        case C::Amiga500:   return plural ? "Amiga 500s" : "Amiga 500";
+        case C::Amiga1200:  return plural ? "Amiga 1200s" : "Amiga 1200";
+        case C::Modern: case C::Linear: case C::Raw: case C::count: break;
+    }
+    return plural ? "computers" : "computer";
+}
+
+juce::String verdictQuip (int n)
+{
+    if (n == 1) return "Great job!";
+    if (n == 2) return "You got a spare, right?";
+    if (n == 3) return "Time to raid the attic.";
+    if (n == 4) return "Is this a LAN party?";
+    if (n <= 7) return "That's a shelf, not a console.";
+    return "You're running a museum now.";
+}
+
 void styleSmallLabel (juce::Label& l, float size = 11.5f, bool caps = false)
 {
     l.setFont (caps ? font (11.0f, true).withExtraKerningFactor (0.12f) : font (size));
@@ -88,7 +120,7 @@ LotusEditor::LotusEditor (LotusProcessor& p)
 
     // Sound page
     soundPage = { &envCard, &envelopeView, &attackKnob, &decayKnob, &sustainKnob, &releaseKnob,
-                  &consoleCard, &consoleBox, &formatChip, &voicesChip,
+                  &consoleCard, &consoleBox, &formatChip, &voicesChip, &songMeter,
                   &playCard, &noteOffLabel, &noteOffSwitch, &envSourceLabel, &envSourceSwitch,
                   &outputCard, &volumeKnob, &bendKnob, &glideKnob };
 
@@ -112,6 +144,8 @@ LotusEditor::LotusEditor (LotusProcessor& p)
     consoleBox.onChange = [this] { refreshConsole(); };
     formatChip.setTooltip ("Play the samples as they'd sound after conversion to the console's own format "
                            "(BRR, ADPCM, DPCM). Converting takes a moment after switching.");
+    songMeter.onClick = [this] { showVerdict(); };
+    verdict.onReset = [this] { lotus::VoiceRegistry::get().resetPeak (processor.getConsole()); };
     voicesChip.setTooltip ("Limit polyphony to the console's hardware voices. Extra notes steal the oldest, like the real thing.");
 
     for (auto* l : { &noteOffLabel, &envSourceLabel }) styleSmallLabel (*l, 12.5f);
@@ -167,6 +201,8 @@ LotusEditor::LotusEditor (LotusProcessor& p)
     for (auto& sw : fxSwitches) content.addChildComponent (sw.get());
     for (auto& list : effectControls)
         for (auto* c : list) content.addChildComponent (c);
+
+    content.addChildComponent (verdict);
 
     setResizable (true, true);
     setResizeLimits (baseWidth * 3 / 4, baseHeight * 3 / 4, baseWidth * 2, baseHeight * 2);
@@ -274,6 +310,7 @@ void LotusEditor::Content::paint (juce::Graphics& g)
 void LotusEditor::Content::resized()
 {
     auto& e = editor;
+    e.verdict.setBounds (getLocalBounds());
     auto r = getLocalBounds().reduced (20, 16);
 
     auto header = r.removeFromTop (46);
@@ -317,6 +354,7 @@ void LotusEditor::Content::resized()
         auto outR     = footer;
 
         e.consoleCard.setBounds (consoleR);
+        e.songMeter.setBounds (consoleR.getRight() - 84, consoleR.getY() + 7, 72, 20);
         auto cIn = inside (e.consoleCard);
         e.consoleBox.setBounds (cIn.removeFromTop (30));
         cIn.removeFromTop (12);
@@ -408,6 +446,8 @@ void LotusEditor::timerCallback()
     for (int i = 0; i < numEffects; ++i)
         fxRows[(size_t) i]->setActive (param (effectInfo[i].onParam) > 0.5f);
 
+    updateSongMeter();
+
     EnvelopeView::State s;
     s.attack  = param (ParamIDs::attack);
     s.decay   = param (ParamIDs::decay);
@@ -416,6 +456,56 @@ void LotusEditor::timerCallback()
     s.cut     = param (ParamIDs::noteOff) > 0.5f;
     s.sf2     = param (ParamIDs::envSource) > 0.5f;
     envelopeView.setState (s);
+}
+
+void LotusEditor::updateSongMeter()
+{
+    const auto console = processor.getConsole();
+    const auto& prof = lotus::getConsoleProfile (console);
+    auto& reg = lotus::VoiceRegistry::get();
+    const int now = reg.currentTotal (console);
+    const double t = juce::Time::getMillisecondCounterHiRes();
+    if (prof.voiceLimit > 0 && now > prof.voiceLimit)
+        overUntilMs = t + 2000.0;   // keep red long enough to notice a brief overload
+    songMeter.setState (now, prof.voiceLimit, t < overUntilMs);
+
+    const int tracks = reg.instancesOn (console);
+    songMeter.setTooltip ("Voices playing right now across " + juce::String (tracks)
+                          + (tracks == 1 ? " Lotus" : " Lotuses") + " set to " + prof.name
+                          + ". Click to see how many consoles your song needs.");
+}
+
+void LotusEditor::showVerdict()
+{
+    const auto console = processor.getConsole();
+    const auto& prof = lotus::getConsoleProfile (console);
+    auto& reg = lotus::VoiceRegistry::get();
+    const int peak = reg.peakTotal (console);
+    const int tracks = reg.instancesOn (console);
+    const juce::String across = juce::String (peak) + (peak == 1 ? " voice" : " voices") + " at once across "
+                              + juce::String (tracks) + (tracks == 1 ? " track." : " tracks.");
+
+    if (prof.voiceLimit <= 0)
+    {
+        const bool isN64 = console == lotus::ConsoleId::N64;
+        verdict.show (1, "This song takes 1 " + consoleNoun (console, false) + " to run. Great job!",
+                      (isN64 ? juce::String ("The N64 mixes in software, so there's no fixed voice count. ")
+                           : juce::String ("No fixed voice count here. "))
+                          + "Peak: " + across);
+        return;
+    }
+
+    if (peak == 0)
+    {
+        verdict.show (0, "Play your song first!",
+                      "Lotus counts the most voices sounding at once across every track set to "
+                          + juce::String (prof.name) + ". Play it through, then click here again.");
+        return;
+    }
+
+    const int n = (peak + prof.voiceLimit - 1) / prof.voiceLimit;
+    verdict.show (n, "This song takes " + juce::String (n) + " " + consoleNoun (console, n != 1) + " to run. " + verdictQuip (n),
+                  "Peak: " + across + " The " + consoleNoun (console, false) + " has " + juce::String (prof.voiceLimit) + ".");
 }
 
 void LotusEditor::refreshConsole()

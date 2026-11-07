@@ -257,6 +257,201 @@ Chip::Chip (juce::AudioProcessorValueTreeState& state, const juce::String& param
     setMouseCursor (juce::MouseCursor::PointingHandCursor);
 }
 
+namespace
+{
+const juce::Colour amber { 0xfff2c46d };
+const juce::Colour red   { 0xffff6b7a };
+}
+
+void SongMeter::setState (int v, int l, bool held)
+{
+    if (v == voices && l == limit && held == overHeld) return;
+    voices = v; limit = l; overHeld = held;
+    repaint();
+}
+
+void SongMeter::paint (juce::Graphics& g)
+{
+    const auto r = getLocalBounds().toFloat().reduced (0.5f);
+    g.setColour (isMouseOver() ? Palette::panelRaised : Palette::background);
+    g.fillRoundedRectangle (r, r.getHeight() * 0.5f);
+    g.setColour (Palette::outline);
+    g.drawRoundedRectangle (r, r.getHeight() * 0.5f, 1.0f);
+
+    juce::Colour c = Palette::textFaint;
+    if (voices > 0 || overHeld)
+    {
+        if (limit <= 0)                        c = Palette::leaf;
+        else if (overHeld || voices > limit)   c = red;
+        else if (voices == limit)              c = amber;
+        else                                   c = Palette::leaf;
+    }
+
+    const float d = 7.0f;
+    const auto dot = juce::Rectangle<float> (d, d).withCentre ({ r.getX() + 11.0f, r.getCentreY() });
+    if (c == red)
+    {
+        g.setColour (red.withAlpha (0.35f));
+        g.fillEllipse (dot.expanded (3.0f));
+    }
+    g.setColour (c);
+    g.fillEllipse (dot);
+
+    g.setColour (Palette::textDim);
+    g.setFont (font (11.0f, true));
+    const juce::String text = limit > 0 ? juce::String (voices) + " / " + juce::String (limit) : juce::String (voices);
+    g.drawText (text, r.withTrimmedLeft (19.0f).withTrimmedRight (6.0f), juce::Justification::centredLeft);
+}
+
+VerdictPopup::VerdictPopup()
+{
+    for (auto* b : { &resetButton, &closeButton }) addAndMakeVisible (b);
+    resetButton.onClick = [this] { if (onReset) onReset(); setVisible (false); stopTimer(); };
+    closeButton.onClick = [this] { setVisible (false); stopTimer(); };
+}
+
+void VerdictPopup::show (int consoles, const juce::String& t, const juce::String& d)
+{
+    count = consoles;
+    title = t;
+    detail = d;
+    phase = 0.0f;
+    setVisible (true);
+    toFront (false);
+    startTimerHz (30);
+    repaint();
+}
+
+juce::Rectangle<int> VerdictPopup::panelBounds() const
+{
+    return getLocalBounds().withSizeKeepingCentre (460, 300);
+}
+
+void VerdictPopup::resized()
+{
+    auto p = panelBounds().reduced (20);
+    auto buttons = p.removeFromBottom (34);
+    closeButton.setBounds (buttons.removeFromRight (110));
+    buttons.removeFromRight (10);
+    resetButton.setBounds (buttons.removeFromRight (120));
+}
+
+void VerdictPopup::mouseDown (const juce::MouseEvent& e)
+{
+    if (! panelBounds().contains (e.getPosition()))
+    {
+        setVisible (false);
+        stopTimer();
+    }
+}
+
+void VerdictPopup::drawConsole (juce::Graphics& g, juce::Rectangle<float> r, int mood)
+{
+    // A generic little console with a face.
+    const float s = r.getHeight();
+    auto body = r.reduced (s * 0.04f);
+    g.setColour (Palette::background.withAlpha (0.5f));
+    g.fillEllipse (body.getX() + s * 0.1f, body.getBottom() - s * 0.02f, body.getWidth() - s * 0.2f, s * 0.08f);
+
+    g.setGradientFill (juce::ColourGradient (Palette::panelRaised.brighter (0.25f), body.getTopLeft(),
+                                             Palette::panelRaised, body.getBottomLeft(), false));
+    g.fillRoundedRectangle (body, s * 0.16f);
+    g.setColour (Palette::accent.withAlpha (0.7f));
+    g.drawRoundedRectangle (body, s * 0.16f, 1.6f);
+
+    // Cartridge slot and cartridge
+    auto slot = body.withHeight (s * 0.14f).withSizeKeepingCentre (body.getWidth() * 0.55f, s * 0.14f).translated (0, s * 0.08f);
+    g.setColour (Palette::background);
+    g.fillRoundedRectangle (slot, s * 0.04f);
+    g.setColour (Palette::accent);
+    g.fillRoundedRectangle (slot.reduced (s * 0.03f, 0).withTrimmedBottom (s * 0.06f).translated (0, -s * 0.07f), s * 0.03f);
+
+    // Face
+    const float eyeY = body.getY() + s * 0.48f;
+    const float cx = body.getCentreX();
+    const float eyeDx = s * 0.17f, eyeR = s * 0.045f;
+    g.setColour (Palette::text);
+    if (mood >= 2)
+    {
+        for (float ex : { cx - eyeDx, cx + eyeDx })   // dizzy x eyes
+        {
+            g.drawLine (ex - eyeR, eyeY - eyeR, ex + eyeR, eyeY + eyeR, 1.6f);
+            g.drawLine (ex - eyeR, eyeY + eyeR, ex + eyeR, eyeY - eyeR, 1.6f);
+        }
+    }
+    else
+    {
+        g.fillEllipse (cx - eyeDx - eyeR, eyeY - eyeR, eyeR * 2, eyeR * 2);
+        g.fillEllipse (cx + eyeDx - eyeR, eyeY - eyeR, eyeR * 2, eyeR * 2);
+    }
+
+    juce::Path mouth;
+    const float my = eyeY + s * 0.12f;
+    if (mood == 1)
+    {
+        mouth.startNewSubPath (cx - s * 0.08f, my + s * 0.02f);   // nervous wobble
+        mouth.quadraticTo (cx - s * 0.04f, my - s * 0.02f, cx, my + s * 0.02f);
+        mouth.quadraticTo (cx + s * 0.04f, my + s * 0.06f, cx + s * 0.08f, my + s * 0.02f);
+    }
+    else
+    {
+        mouth.startNewSubPath (cx - s * 0.09f, my);
+        mouth.quadraticTo (cx, my + s * 0.1f, cx + s * 0.09f, my);
+    }
+    g.strokePath (mouth, juce::PathStrokeType (1.8f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
+
+    // Blush
+    g.setColour (Palette::accent.withAlpha (0.35f));
+    g.fillEllipse (cx - eyeDx - s * 0.11f, eyeY + s * 0.05f, s * 0.08f, s * 0.05f);
+    g.fillEllipse (cx + eyeDx + s * 0.03f, eyeY + s * 0.05f, s * 0.08f, s * 0.05f);
+
+    // Buttons
+    g.setColour (Palette::leaf);
+    g.fillEllipse (body.getRight() - s * 0.2f, body.getBottom() - s * 0.2f, s * 0.08f, s * 0.08f);
+    g.setColour (Palette::accent);
+    g.fillEllipse (body.getRight() - s * 0.32f, body.getBottom() - s * 0.16f, s * 0.08f, s * 0.08f);
+}
+
+void VerdictPopup::paint (juce::Graphics& g)
+{
+    g.fillAll (Palette::background.withAlpha (0.72f));
+
+    const auto p = panelBounds().toFloat();
+    g.setColour (Palette::panel);
+    g.fillRoundedRectangle (p, 16.0f);
+    g.setColour (Palette::accent.withAlpha (0.5f));
+    g.drawRoundedRectangle (p.reduced (0.5f), 16.0f, 1.2f);
+
+    // Consoles, bobbing gently out of step with each other.
+    const int shown = juce::jlimit (1, 8, juce::jmax (1, count));
+    const float size = shown <= 3 ? 84.0f : (shown <= 5 ? 66.0f : 50.0f);
+    const float gap = 10.0f;
+    const float rowW = shown * size + (shown - 1) * gap;
+    float x = p.getCentreX() - rowW * 0.5f;
+    const int mood = count <= 1 ? 0 : (count <= 3 ? 1 : 2);
+    for (int i = 0; i < shown; ++i)
+    {
+        const float bob = std::sin (phase + (float) i * 0.9f) * 3.0f;
+        drawConsole (g, { x, p.getY() + 30.0f + (84.0f - size) + bob, size, size * 0.86f }, count == 0 ? 0 : mood);
+        x += size + gap;
+    }
+    if (count > 8)
+    {
+        g.setColour (Palette::accent);
+        g.setFont (font (16.0f, true));
+        g.drawText ("+" + juce::String (count - 8), juce::Rectangle<float> (p.getRight() - 64.0f, p.getY() + 14.0f, 50.0f, 22.0f),
+                    juce::Justification::centredRight);
+    }
+
+    auto text = p.reduced (24.0f).withTrimmedTop (104.0f).withTrimmedBottom (44.0f);
+    g.setColour (Palette::text);
+    g.setFont (font (18.0f, true));
+    g.drawFittedText (title, text.removeFromTop (48.0f).toNearestInt(), juce::Justification::centred, 2);
+    g.setColour (Palette::textDim);
+    g.setFont (font (12.5f));
+    g.drawFittedText (detail, text.toNearestInt(), juce::Justification::centredTop, 3);
+}
+
 void Chip::mouseDown (const juce::MouseEvent&)
 {
     if (isEnabled()) attachment->setValueAsCompleteGesture (on ? 0.0f : 1.0f);

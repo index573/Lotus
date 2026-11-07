@@ -13,6 +13,7 @@ Formats: **CLAP**, **VST3** and **Standalone** on Windows, macOS and Linux, plus
 - **Console playback.** Pick a console and Lotus copies its mixer rate, interpolation, pitch precision, bit depth and output filtering.
 - **Native sample formats.** Optionally hear your samples after conversion to the console's own format (BRR on SNES, ADPCM on PS1/PS2, IMA-ADPCM on DS, DPCM on NES).
 - **Hardware voice limits.** Optionally cap polyphony at the console's voice count, so the SNES gets 8, the Amiga 4 and the NES DMC 1. Extra notes steal the oldest.
+- **Song-wide voice light.** Every Lotus in your project set to the same console adds up its voices, and a light in the Console card turns red when the song needs more than the hardware has. Click it to find out how many consoles your song would take.
 - **Console effects.** SNES echo, N64 reverb, PS1 reverb and the Amiga LED filter, on their own tab.
 - **Glide**, pitch-bend range, MIDI program changes, drag and drop, a scalable window.
 
@@ -67,6 +68,16 @@ The FIR adds 7 samples of delay, and extreme settings can overflow and distort t
 **Amiga LED Filter.** The Amiga's switchable 12 dB/oct low-pass at about 3.1 kHz (a Sallen-Key stage with the real component values). It works on any console.
 
 The effects run at the console's mixer rate. With the matching console selected they behave like the hardware; with any other console, delay times stay right but the filters shift with the sample rate. The Effects tab tells you when that's the case.
+
+## The voice light
+
+The light at the top right of the Console card shows how many voices are playing right now across every Lotus in the project set to the same console, against that console's limit (for example `9 / 8` on SNES). It turns amber at the limit and red over it, and stays red for two seconds so a brief overload doesn't slip past.
+
+Click it after playing your song through and Lotus tells you how many of that console the song would need, based on the peak. **Reset peak** starts the count again.
+
+![Verdict](docs/verdict.png)
+
+Instances find each other through shared memory, so this works when your DAW loads plugins in the same process, which is the usual setup. Instances it can't see are those running in a separate plugin sandbox or bridge, or a VST3 and a CLAP copy mixed in one project. It's a warning only: each instance still steals voices on its own when the Voices chip is on.
 
 ## Using it
 

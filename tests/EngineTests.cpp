@@ -6,6 +6,7 @@
 
 #include "../Source/dsp/Codecs.h"
 #include "../Source/dsp/Synth.h"
+#include "../Source/dsp/VoiceRegistry.h"
 
 #include <cmath>
 #include <cstdio>
@@ -658,6 +659,33 @@ static void testAnalogStage()
     CHECK (minNeg < -0.3f);
 }
 
+static void testVoiceRegistry()
+{
+    std::printf ("voice registry: song-wide totals per console, peak and reset\n");
+    auto& reg = VoiceRegistry::get();
+    const int a = reg.join(), b = reg.join(), c = reg.join();
+    CHECK (a >= 0 && b >= 0 && c >= 0 && a != b && b != c);
+
+    reg.resetPeak (ConsoleId::Snes);
+    CHECK (reg.publish (a, ConsoleId::Snes, 5) == 5);
+    CHECK (reg.publish (b, ConsoleId::Snes, 6) == 11);
+    CHECK (reg.publish (c, ConsoleId::Ps1, 20) == 20);        // other console: not counted with SNES
+    CHECK (reg.currentTotal (ConsoleId::Snes) == 11);
+    CHECK (reg.instancesOn (ConsoleId::Snes) == 2);
+
+    reg.publish (a, ConsoleId::Snes, 0);
+    CHECK (reg.currentTotal (ConsoleId::Snes) == 6);
+    CHECK (reg.peakTotal (ConsoleId::Snes) == 11);            // peak is held
+    reg.resetPeak (ConsoleId::Snes);
+    CHECK (reg.peakTotal (ConsoleId::Snes) == 6);
+
+    reg.leave (b);
+    CHECK (reg.currentTotal (ConsoleId::Snes) == 0);          // leaving drops its voices
+    reg.leave (a);
+    reg.leave (c);
+    CHECK (reg.instancesOn (ConsoleId::Snes) == 0);
+}
+
 int main()
 {
     testParser();
@@ -678,6 +706,7 @@ int main()
     testN64Reverb();
     testVoiceLimitAndGlide();
     testAnalogStage();
+    testVoiceRegistry();
 
     if (failures == 0) std::printf ("\nAll tests passed.\n");
     else std::printf ("\n%d check(s) failed.\n", failures);

@@ -4,6 +4,7 @@
 
 #include "dsp/Codecs.h"
 #include "dsp/Synth.h"
+#include "dsp/VoiceRegistry.h"
 
 #include <thread>
 #include <unordered_map>
@@ -86,6 +87,9 @@ public:
 
     lotus::ConsoleId getConsole() const;
 
+    /** Voices playing right now across every Lotus in this project set to the same console. */
+    int getSongVoices() const { return songVoices.load (std::memory_order_relaxed); }
+
     std::atomic<int> soundFontGeneration { 0 };
     juce::AudioProcessorValueTreeState params;
 
@@ -104,6 +108,8 @@ private:
     juce::SpinLock engineLock;   // guards SoundFont/pool swaps; the audio thread only try-locks
 
     std::vector<float> scratchR;
+    int registrySlot = -1;
+    std::atomic<int> songVoices { 0 };
     std::unordered_map<const char*, std::atomic<float>*> raw;   // keyed by the ParamIDs constants
 
     // Native-format encoding runs on its own thread.
