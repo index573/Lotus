@@ -51,3 +51,7 @@ These figures were checked against the following projects and documents. No code
 - NES DMC rate table and APU output filters: the [NESdev wiki](https://www.nesdev.org/wiki/APU_DMC).
 - SCSP/AICA interpolation and pitch format: [MAME](https://github.com/mamedev/mame) (`scsp.cpp`, `aica.cpp`).
 - DS timer clock and mixer rate: GBATEK.
+
+## Pitch detection
+
+The tuning check uses the YIN algorithm described in A. de Cheveigné and H. Kawahara, "YIN, a fundamental frequency estimator for speech and music", *Journal of the Acoustical Society of America* 111(4), 2002. Lotus contains its own implementation.

@@ -1,4 +1,5 @@
 #include "Widgets.h"
+#include "Strings.h"
 
 #include <cmath>
 
@@ -59,7 +60,7 @@ void Card::paint (juce::Graphics& g)
     {
         g.setColour (Palette::textDim);
         g.setFont (font (11.0f, true).withExtraKerningFactor (0.12f));
-        g.drawText (title.toUpperCase(), 14, 10, getWidth() - 28, 14, juce::Justification::centredLeft);
+        g.drawText (tr (title).toUpperCase(), 14, 10, getWidth() - 28, 14, juce::Justification::centredLeft);
     }
 }
 
@@ -104,7 +105,7 @@ void Knob::paint (juce::Graphics& g)
 {
     g.setColour (isEnabled() ? Palette::textDim : Palette::textFaint);
     g.setFont (font (12.0f, true));
-    g.drawText (caption, getLocalBounds().removeFromTop (16), juce::Justification::centred);
+    g.drawText (tr (caption), getLocalBounds().removeFromTop (16), juce::Justification::centred);
 }
 
 Segmented::Segmented (juce::AudioProcessorValueTreeState& state, const juce::String& paramId, juce::StringArray labelList)
@@ -240,7 +241,7 @@ void Segmented::paint (juce::Graphics& g)
             g.setColour (i == hovered ? Palette::text : Palette::textDim);
         }
         g.setFont (font (13.0f, true));
-        g.drawText (labels[i], seg, juce::Justification::centred);
+        g.drawText (tr (labels[i]), seg, juce::Justification::centred);
     }
 }
 
@@ -287,7 +288,7 @@ void SongMeter::paint (juce::Graphics& g)
         g.drawEllipse (dot, 1.2f);
         g.setColour (Palette::textFaint);
         g.setFont (font (11.0f, true));
-        g.drawText ("mixed", r.withTrimmedLeft (19.0f).withTrimmedRight (6.0f), juce::Justification::centredLeft);
+        g.drawText (tr ("mixed"), r.withTrimmedLeft (19.0f).withTrimmedRight (6.0f), juce::Justification::centredLeft);
         return;
     }
     if (voices > 0 || overHeld)
@@ -326,14 +327,15 @@ void VerdictPopup::showConfused (const juce::String& t, const juce::String& d)
     show (1, t, d);
     confused = true;
     resetButton.setVisible (false);
-    closeButton.setButtonText ("Got it");
+    closeButton.setButtonText (tr ("Got it"));
 }
 
 void VerdictPopup::show (int consoles, const juce::String& t, const juce::String& d)
 {
     confused = false;
     resetButton.setVisible (true);
-    closeButton.setButtonText ("Nice!");
+    resetButton.setButtonText (tr ("Reset peak"));
+    closeButton.setButtonText (tr ("Nice!"));
     count = consoles;
     title = t;
     detail = d;
@@ -544,10 +546,10 @@ void EffectRow::paint (juce::Graphics& g)
 
     g.setColour (selected ? Palette::text : Palette::textDim);
     g.setFont (font (14.0f, true));
-    g.drawText (name, r.withTrimmedLeft (16.0f).withHeight (r.getHeight() * 0.58f), juce::Justification::bottomLeft);
+    g.drawText (tr (name), r.withTrimmedLeft (16.0f).withHeight (r.getHeight() * 0.58f), juce::Justification::bottomLeft);
     g.setColour (Palette::textFaint);
     g.setFont (font (11.5f));
-    g.drawText (console, r.withTrimmedLeft (16.0f).withTrimmedTop (r.getHeight() * 0.58f), juce::Justification::topLeft);
+    g.drawText (tr (console), r.withTrimmedLeft (16.0f).withTrimmedTop (r.getHeight() * 0.58f), juce::Justification::topLeft);
 }
 
 void EnvelopeView::paint (juce::Graphics& g)
@@ -561,8 +563,8 @@ void EnvelopeView::paint (juce::Graphics& g)
     {
         g.setColour (Palette::textDim);
         g.setFont (font (14.0f));
-        g.drawText (state.cut ? "Using the SoundFont's envelope  -  notes cut on release"
-                              : "Using the SoundFont's own envelope",
+        g.drawText (state.cut ? tr ("Using the SoundFont's envelope  -  notes cut on release")
+                              : tr ("Using the SoundFont's own envelope"),
                     getLocalBounds(), juce::Justification::centred);
         return;
     }
@@ -645,9 +647,59 @@ void EnvelopeView::paint (juce::Graphics& g)
     {
         g.setColour (Palette::accent);
         g.setFont (font (11.0f, true));
-        g.drawText ("CUT", juce::Rectangle<float> (releaseStart.x - 40.0f, bottom - 16.0f, 36.0f, 14.0f), juce::Justification::centredRight);
+        g.drawText (tr ("CUT"), juce::Rectangle<float> (releaseStart.x - 60.0f, bottom - 16.0f, 56.0f, 14.0f), juce::Justification::centredRight);
     }
 
+}
+
+void VibratoView::paint (juce::Graphics& g)
+{
+    const auto area = getLocalBounds().toFloat().reduced (7.0f, 7.0f);
+    const float midY = area.getCentreY();
+    const float span = 2.5f;   // seconds shown
+    const float amp = area.getHeight() * 0.42f * std::sqrt (juce::jlimit (0.0f, 1.0f, state.amount / 200.0f));
+
+    g.setColour (Palette::outline.withAlpha (0.6f));
+    g.drawHorizontalLine (juce::roundToInt (midY), area.getX(), area.getRight());
+    for (float t = 0.5f; t < span; t += 0.5f)
+        g.drawVerticalLine (juce::roundToInt (area.getX() + area.getWidth() * t / span), area.getY(), area.getBottom());
+
+    auto xFor = [&] (float t) { return area.getX() + area.getWidth() * juce::jlimit (0.0f, 1.0f, t / span); };
+    if (state.delay > 0.0f)
+    {
+        g.setColour (Palette::background.withAlpha (0.45f));
+        g.fillRect (juce::Rectangle<float> (area.getX(), area.getY(), xFor (state.delay) - area.getX(), area.getHeight()));
+    }
+
+    juce::Path wave;
+    const int steps = juce::jmax (64, (int) area.getWidth() * 2);
+    for (int i = 0; i <= steps; ++i)
+    {
+        const float t = span * (float) i / (float) steps;
+        float y = 0.0f;
+        if (state.amount > 0.0f && t >= state.delay)
+        {
+            const float since = t - state.delay;
+            const float fade = state.attack > 0.0f ? juce::jmin (1.0f, since / state.attack) : 1.0f;
+            const float s = std::sin (juce::MathConstants<float>::twoPi * state.speed * since);
+            float shape = s;
+            if (state.shape == 1)      shape = (2.0f / juce::MathConstants<float>::pi) * std::asin (s);
+            else if (state.shape == 2) shape = s >= 0.0f ? 1.0f : -1.0f;
+            y = fade * shape;
+        }
+        const float x = area.getX() + area.getWidth() * (float) i / (float) steps;
+        if (i == 0) wave.startNewSubPath (x, midY - y * amp);
+        else        wave.lineTo (x, midY - y * amp);
+    }
+    g.setColour (state.amount > 0.0f ? Palette::accent : Palette::textFaint);
+    g.strokePath (wave, juce::PathStrokeType (2.0f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
+
+    g.setColour (Palette::textDim);
+    g.setFont (font (11.5f));
+    const juce::String label = state.amount > 0.0f
+        ? juce::String::fromUTF8 ("\xc2\xb1") + juce::String (state.amount, state.amount < 10.0f ? 1 : 0) + " c   " + juce::String (state.speed, 1) + " Hz"
+        : tr ("Off (Amount 0)");
+    g.drawText (label, area.reduced (4.0f, 2.0f), juce::Justification::topRight);
 }
 
 void IconButton::paintButton (juce::Graphics& g, bool over, bool down)
@@ -661,7 +713,8 @@ void IconButton::paintButton (juce::Graphics& g, bool over, bool down)
     const auto c = r.getCentre();
     const float s = r.getHeight() * 0.16f;
     juce::Path chev;
-    if (icon == Icon::Left)
+    if (icon == Icon::Globe) {}
+    else if (icon == Icon::Left)
     {
         chev.startNewSubPath (c.x + s * 0.6f, c.y - s * 1.2f);
         chev.lineTo (c.x - s * 0.6f, c.y);
@@ -674,6 +727,17 @@ void IconButton::paintButton (juce::Graphics& g, bool over, bool down)
         chev.lineTo (c.x - s * 0.6f, c.y + s * 1.2f);
     }
     g.setColour (isEnabled() ? (over ? Palette::accent : Palette::text) : Palette::textFaint);
+    if (icon == Icon::Globe)
+    {
+        const float rad = r.getHeight() * 0.26f;
+        juce::Path globe;
+        globe.addEllipse (c.x - rad, c.y - rad, rad * 2, rad * 2);
+        globe.addEllipse (c.x - rad * 0.45f, c.y - rad, rad * 0.9f, rad * 2);
+        globe.startNewSubPath (c.x - rad, c.y);
+        globe.lineTo (c.x + rad, c.y);
+        g.strokePath (globe, juce::PathStrokeType (1.4f));
+        return;
+    }
     g.strokePath (chev, juce::PathStrokeType (1.8f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
 }
 

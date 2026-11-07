@@ -183,11 +183,32 @@ private:
     State state;
 };
 
-/** Small round icon button (used for the preset arrows). */
+/** Picture of the vibrato LFO: flat during the delay, fading in over the attack. */
+class VibratoView final : public juce::Component
+{
+public:
+    struct State
+    {
+        float amount = 0, speed = 5.5f, delay = 0, attack = 0;
+        int shape = 0;
+        bool operator!= (const State& o) const
+        {
+            return ! juce::exactlyEqual (amount, o.amount) || ! juce::exactlyEqual (speed, o.speed) || ! juce::exactlyEqual (delay, o.delay)
+                || ! juce::exactlyEqual (attack, o.attack) || shape != o.shape;
+        }
+    };
+    void setState (const State& s) { if (s != state) { state = s; repaint(); } }
+    void paint (juce::Graphics&) override;
+
+private:
+    State state;
+};
+
+/** Small round icon button (preset arrows, language). */
 class IconButton final : public juce::Button
 {
 public:
-    enum class Icon { Left, Right };
+    enum class Icon { Left, Right, Globe };
     explicit IconButton (Icon i) : juce::Button ({}), icon (i) {}
     void paintButton (juce::Graphics&, bool over, bool down) override;
 

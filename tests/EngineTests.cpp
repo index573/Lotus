@@ -6,12 +6,14 @@
 
 #include "../Source/dsp/Codecs.h"
 #include "../Source/dsp/Synth.h"
+#include "../Source/dsp/TuningAnalysis.h"
 #include "../Source/dsp/VoiceRegistry.h"
 
 #include <cmath>
 #include <cstdio>
 #include <atomic>
 #include <cstring>
+#include <fstream>
 #include <string>
 #include <vector>
 
@@ -551,7 +553,7 @@ static void testNativeFormatInEngine()
     std::printf ("engine plays the coded pool only when the format is enabled and matches\n");
     EngineParams p; p.console = ConsoleId::Snes;
     Rig rig (p);
-    std::vector<int16_t> silent (rig.sf->samples.size(), 0);
+    std::vector<int16_t> silent (rig.sf->samples().size(), 0);
     rig.synth.setCodedPool (&silent, Codec::Brr);
     rig.synth.noteOn (69, 127);
     CHECK (peak (rig.run (0.1), 0, 4800) > 0.1f);   // nativeFormat off: original samples
@@ -696,6 +698,298 @@ static void testVoiceRegistry()
     for (bool used : reg.consolesInUse()) CHECK (! used);
 }
 
+static void testVibratoAndTuning()
+{
+    std::printf ("vibrato (delay, depth, speed) and master tuning\n");
+    auto pitchAt = [] (const std::vector<float>& a, double rate, double t0, double t1)
+    {
+        std::vector<float> w (a.begin() + (long) (t0 * rate), a.begin() + (long) (t1 * rate));
+        return zeroCrossFreq (w, rate);
+    };
+    {
+        EngineParams p; p.tuneCents = 1200.0f * std::log2 (432.0f / 440.0f);   // A4 = 432 Hz
+        Rig rig (p, 48000.0);
+        rig.synth.noteOn (69, 127);
+        auto a = rig.run (0.5);
+        CHECK (std::fabs (pitchAt (a, 48000.0, 0.1, 0.5) - 441.0 * 432.0 / 440.0) < 2.0);
+    }
+    {
+        EngineParams p; p.vibAmount = 100.0f; p.vibSpeed = 2.0f; p.vibDelay = 0.3f; p.vibAttack = 0.0f; p.vibShape = 2;
+        Rig rig (p, 48000.0);
+        rig.synth.noteOn (69, 127);
+        auto a = rig.run (1.2);
+        // Before the delay: steady. Square vibrato at 2 Hz then alternates +100 / -100 cents every 250 ms.
+        CHECK (std::fabs (pitchAt (a, 48000.0, 0.05, 0.28) - 441.0) < 3.0);
+        const double up = pitchAt (a, 48000.0, 0.32, 0.53), down = pitchAt (a, 48000.0, 0.57, 0.78);
+        CHECK (std::fabs (up - 441.0 * std::pow (2.0, 100.0 / 1200.0)) < 4.0);
+        CHECK (std::fabs (down - 441.0 * std::pow (2.0, -100.0 / 1200.0)) < 4.0);
+    }
+    {
+        EngineParams p; p.vibAmount = 50.0f; p.vibSpeed = 6.0f; p.vibAttack = 0.5f;
+        Rig rig (p, 48000.0);
+        rig.synth.noteOn (69, 127);
+        auto a = rig.run (1.0);
+        // Fade-in: the first 50 ms barely moves; later the pitch swings.
+        double lo = 1e9, hi = 0;
+        for (double t = 0.6; t < 0.95; t += 0.02) { const double f = pitchAt (a, 48000.0, t, t + 0.02); lo = std::min (lo, f); hi = std::max (hi, f); }
+        CHECK (hi / lo > std::pow (2.0, 40.0 / 1200.0));
+        CHECK (std::fabs (pitchAt (a, 48000.0, 0.0, 0.05) - 441.0) < 6.0);
+    }
+}
+
+// ---------------------------------------------------------------------------------
+// Tuning analysis
+
+struct TestPreset
+{
+    std::string name;
+    int bank = 0, program = 0;
+    std::vector<int16_t> sample;
+    int rootKey = 60;
+    int fineTune = 0;          // instrument zone
+    int presetGlobalFine = 0;  // preset global zone (0 = no global zone)
+    bool loop = true;
+};
+
+static std::vector<int16_t> tone (double hz, int n, double rate = 44100.0, bool square = false)
+{
+    std::vector<int16_t> v ((size_t) n);
+    for (int i = 0; i < n; ++i)
+    {
+        const double s = std::sin (2.0 * 3.14159265358979 * hz * i / rate);
+        // a touch of 2nd/3rd harmonic so it isn't a pure sine
+        const double x = square ? (s >= 0 ? 1.0 : -1.0) : s + 0.3 * std::sin (2.0 * 3.14159265358979 * 2 * hz * i / rate)
+                                                            + 0.2 * std::sin (2.0 * 3.14159265358979 * 3 * hz * i / rate);
+        v[(size_t) i] = (int16_t) (x * 9000.0);
+    }
+    return v;
+}
+
+static std::vector<int16_t> noise (int n)
+{
+    std::vector<int16_t> v ((size_t) n);
+    uint32_t seed = 12345;
+    for (auto& s : v) { seed = seed * 1664525u + 1013904223u; s = (int16_t) ((int) (seed >> 16) - 32768) / 3; }
+    return v;
+}
+
+static std::vector<uint8_t> buildFont (const std::vector<TestPreset>& presets)
+{
+    Bytes smpl, phdr, pbag, pgen, inst, ibag, igen, shdr;
+    std::vector<uint32_t> starts;
+    for (auto& p : presets)
+    {
+        starts.push_back ((uint32_t) (smpl.d.size() / 2));
+        for (auto s : p.sample) smpl.u16 (s & 0xFFFF);
+        for (int i = 0; i < 46; ++i) smpl.u16 (0);
+    }
+
+    int pbagIdx = 0, pgenIdx = 0, ibagIdx = 0, igenIdx = 0;
+    for (size_t i = 0; i < presets.size(); ++i)
+    {
+        const auto& p = presets[i];
+        phdr.str (p.name.c_str(), 20); phdr.u16 (p.program); phdr.u16 (p.bank); phdr.u16 (pbagIdx); phdr.u32 (0); phdr.u32 (0); phdr.u32 (0);
+        if (p.presetGlobalFine != 0)
+        {
+            pbag.u16 (pgenIdx); pbag.u16 (0); ++pbagIdx;
+            pgen.u16 (52); pgen.u16 (p.presetGlobalFine & 0xFFFF); ++pgenIdx;
+        }
+        pbag.u16 (pgenIdx); pbag.u16 (0); ++pbagIdx;
+        pgen.u16 (41); pgen.u16 ((int) i); ++pgenIdx;
+
+        inst.str ((p.name + "I").c_str(), 20); inst.u16 (ibagIdx);
+        ibag.u16 (igenIdx); ibag.u16 (0); ++ibagIdx;
+        if (p.fineTune != 0) { igen.u16 (52); igen.u16 (p.fineTune & 0xFFFF); ++igenIdx; }
+        if (p.loop)          { igen.u16 (54); igen.u16 (1); ++igenIdx; }
+        igen.u16 (53); igen.u16 ((int) i); ++igenIdx;
+
+        const uint32_t st = starts[i], en = st + (uint32_t) p.sample.size();
+        shdr.str ((p.name + "S").c_str(), 20); shdr.u32 (st); shdr.u32 (en);
+        shdr.u32 (st + (uint32_t) p.sample.size() / 4); shdr.u32 (en - 8); shdr.u32 (44100);
+        shdr.u8 (p.rootKey); shdr.u8 (0); shdr.u16 (0); shdr.u16 (1);
+    }
+    phdr.str ("EOP", 20); phdr.u16 (0); phdr.u16 (0); phdr.u16 (pbagIdx); phdr.u32 (0); phdr.u32 (0); phdr.u32 (0);
+    pbag.u16 (pgenIdx); pbag.u16 (0);
+    pgen.u16 (0); pgen.u16 (0);
+    inst.str ("EOI", 20); inst.u16 (ibagIdx);
+    ibag.u16 (igenIdx); ibag.u16 (0);
+    igen.u16 (0); igen.u16 (0);
+    shdr.str ("EOS", 20); for (int i = 0; i < 26; ++i) shdr.u8 (0);
+    Bytes pmod, imod; for (int i = 0; i < 10; ++i) { pmod.u8 (0); imod.u8 (0); }
+    Bytes ifil; ifil.u16 (2); ifil.u16 (1);
+
+    Bytes body; body.id ("sfbk");
+    body.append (list ("INFO", { chunk ("ifil", ifil) }));
+    body.append (list ("sdta", { chunk ("smpl", smpl) }));
+    body.append (list ("pdta", { chunk ("phdr", phdr), chunk ("pbag", pbag), chunk ("pmod", pmod), chunk ("pgen", pgen),
+                                 chunk ("inst", inst), chunk ("ibag", ibag), chunk ("imod", imod), chunk ("igen", igen),
+                                 chunk ("shdr", shdr) }));
+    return chunk ("RIFF", body).d;
+}
+
+static const PresetTuning* findTuning (const std::vector<PresetTuning>& r, const std::string& name)
+{
+    for (auto& t : r) if (t.name == name) return &t;
+    return nullptr;
+}
+
+static void testPitchDetection()
+{
+    std::printf ("pitch detection: accurate on tones, low clarity on noise\n");
+    for (double hz : { 55.0, 130.81, 261.63, 440.0, 1046.5, 3000.0 })
+    {
+        std::vector<float> x (8192);
+        const auto t = tone (hz, 8192);
+        for (size_t i = 0; i < x.size(); ++i) x[i] = t[i] / 32768.0f;
+        const auto e = detectPitch (x.data(), (int) x.size(), 44100.0);
+        const double err = 1200.0 * std::log2 (e.hz / hz);
+        if (std::fabs (err) > 3.0 || e.clarity < 0.9)
+        {
+            std::printf ("  %.2f Hz -> %.2f Hz (%.1f cents, clarity %.2f)\n", hz, e.hz, err, e.clarity);
+            ++failures;
+        }
+    }
+    std::vector<float> x (8192);
+    const auto nz = noise (8192);
+    for (size_t i = 0; i < x.size(); ++i) x[i] = nz[i] / 32768.0f;
+    CHECK (detectPitch (x.data(), (int) x.size(), 44100.0).clarity < 0.6);
+}
+
+static void testTuningAnalysis()
+{
+    std::printf ("tuning analysis: finds wrong roots and detuning, skips kits and noise, fixes round-trip\n");
+    const double c5 = 261.6256;
+    std::vector<TestPreset> ps;
+    ps.push_back ({ "InTune", 0, 0, tone (c5, 22050), 60 });
+    ps.push_back ({ "OctaveUp", 0, 1, tone (c5, 22050), 48 });                 // root says C4, sample is C5: plays an octave high
+    ps.push_back ({ "Detuned", 0, 2, tone (c5, 22050), 60, 40 });             // +40 cents in the instrument
+    ps.push_back ({ "GlobalDetune", 0, 3, tone (c5, 22050, 44100.0, true), 60, 0, -35 });   // -35 cents in a preset global zone
+    ps.push_back ({ "Wash", 0, 4, noise (22050), 60, 0, 0, false });
+    ps.push_back ({ "Standard", 128, 0, tone (200.0, 22050), 60 });           // bank 128: drum kit
+    ps.push_back ({ "FifthLow", 0, 5, tone (c5 * std::pow (2.0, -7.0 / 12.0), 22050), 60 });   // sample is F4, root C5
+
+    const auto bytes = buildFont (ps);
+    std::string err;
+    auto sf = SoundFont::loadFromMemory (bytes.data(), bytes.size(), err);
+    CHECK (sf != nullptr);
+    if (! sf) return;
+
+    int calls = 0;
+    const auto res = analyzeTuning (*sf, {}, [&] (int, int) { ++calls; return true; });
+    CHECK (calls >= (int) ps.size());
+    auto status = [&] (const char* n) { auto* t = findTuning (res, n); return t ? t->status : TuneStatus::NoZone; };
+    auto corr = [&] (const char* n) { auto* t = findTuning (res, n); return t ? t->correctionCents : 9999; };
+
+    CHECK (status ("InTune") == TuneStatus::InTune);
+    CHECK (status ("OctaveUp") == TuneStatus::Adjust);
+    CHECK (std::abs (corr ("OctaveUp") + 1200) <= 3);
+    CHECK (status ("Detuned") == TuneStatus::Adjust);
+    CHECK (std::abs (corr ("Detuned") + 40) <= 3);
+    CHECK (status ("GlobalDetune") == TuneStatus::Adjust);
+    CHECK (std::abs (corr ("GlobalDetune") - 35) <= 3);
+    CHECK (status ("Wash") == TuneStatus::Atonal);
+    CHECK (status ("Standard") == TuneStatus::DrumKit);
+    CHECK (status ("FifthLow") == TuneStatus::Adjust);
+    CHECK (std::abs (corr ("FifthLow") - 700) <= 3);
+    CHECK (looksMistuned (res));
+
+    for (auto& t : res)
+        if (t.status == TuneStatus::Adjust || t.status == TuneStatus::InTune)
+            std::printf ("  %-12s %+8.1f cents\n", t.name.c_str(), t.errorCents);
+
+    // Cancelling returns nothing.
+    CHECK (analyzeTuning (*sf, {}, [] (int done, int) { return done < 2; }).empty());
+
+    TuningCorrections fix;
+    for (auto& t : res) if (t.status == TuneStatus::Adjust) fix[{ t.bank, t.program }] = t.correctionCents;
+
+    // In memory
+    auto fixed = withCorrections (*sf, fix);
+    CHECK (&fixed->samples() == &sf->samples());   // shares the pool
+    for (auto& t : analyzeTuning (*fixed, {}))
+        if (t.status == TuneStatus::Adjust) { std::printf ("  still off after fix: %s %+.1f\n", t.name.c_str(), t.errorCents); ++failures; }
+
+    // On disk
+    const std::string src = "lotus_tuning_src.sf2", dst = "lotus_tuning_dst.sf2";
+    { std::ofstream f (src, std::ios::binary); f.write ((const char*) bytes.data(), (std::streamsize) bytes.size()); }
+    CHECK (writeCorrectedSoundFont (src, dst, fix, err));
+    auto reloaded = SoundFont::loadFromFile (dst, err);
+    CHECK (reloaded != nullptr);
+    if (reloaded)
+    {
+        CHECK (reloaded->presets.size() == sf->presets.size());
+        CHECK (reloaded->samples() == sf->samples());
+        for (size_t i = 0; i < sf->presets.size(); ++i)
+        {
+            const auto& a = sf->presets[i];
+            const auto& b = reloaded->presets[i];
+            const auto it = fix.find ({ a.bank, a.program });
+            const float expect = a.regions[0].tuneCents + (it != fix.end() ? (float) it->second : 0.0f);
+            if (std::fabs (b.regions[0].tuneCents - expect) > 0.01f)
+            {
+                std::printf ("  %s: tune %.1f, expected %.1f\n", a.name.c_str(), b.regions[0].tuneCents, expect);
+                ++failures;
+            }
+        }
+        for (auto& t : analyzeTuning (*reloaded, {}))
+            CHECK (t.status != TuneStatus::Adjust);
+    }
+    std::remove (src.c_str());
+    std::remove (dst.c_str());
+
+    // Rip-like banks trigger the prompt: many wrong roots, a bank-wide octave shift, a detuned bank.
+    {
+        std::vector<TestPreset> rip;
+        const int roots[] = { 55, 63, 60, 52, 67, 60, 58, 60 };
+        for (int i = 0; i < 8; ++i) rip.push_back ({ "R" + std::to_string (i), 0, i, tone (c5, 16000), roots[i] });
+        const auto rb = buildFont (rip);
+        auto rsf = SoundFont::loadFromMemory (rb.data(), rb.size(), err);
+        CHECK (rsf != nullptr && looksMistuned (analyzeTuning (*rsf, { false, 25.0 })));
+
+        std::vector<TestPreset> oct;
+        for (int i = 0; i < 6; ++i) oct.push_back ({ "O" + std::to_string (i), 0, i, tone (c5 * std::pow (2.0, i / 12.0), 16000), 72 + i });
+        const auto ob = buildFont (oct);
+        auto osf = SoundFont::loadFromMemory (ob.data(), ob.size(), err);
+        CHECK (osf != nullptr);
+        if (osf)
+        {
+            const auto r = analyzeTuning (*osf, {});
+            CHECK (looksMistuned (r));
+            for (auto& t : r) CHECK (t.status == TuneStatus::Adjust && t.kind == AdjustKind::Octave && t.recommended);
+        }
+
+        std::vector<TestPreset> flat;
+        for (int i = 0; i < 5; ++i) flat.push_back ({ "F" + std::to_string (i), 0, i, tone (c5 * std::pow (2.0, (i - 32.0) / 1200.0), 16000), 60 });
+        const auto fb = buildFont (flat);
+        auto fsf = SoundFont::loadFromMemory (fb.data(), fb.size(), err);
+        CHECK (fsf != nullptr && looksMistuned (analyzeTuning (*fsf, { false, 25.0 })));
+    }
+
+    // A lone octave offset (an organ footage, say) is offered but not selected.
+    {
+        std::vector<TestPreset> org { { "Piano", 0, 0, tone (c5, 16000), 60 }, { "Strings", 0, 1, tone (c5, 16000), 60 },
+                                      { "Organ", 0, 16, tone (c5 / 2, 16000), 60 } };
+        const auto b = buildFont (org);
+        auto osf = SoundFont::loadFromMemory (b.data(), b.size(), err);
+        CHECK (osf != nullptr);
+        if (osf)
+        {
+            const auto r = analyzeTuning (*osf, {});
+            auto* t = findTuning (r, "Organ");
+            CHECK (t != nullptr && t->status == TuneStatus::Adjust && t->kind == AdjustKind::Octave && ! t->recommended);
+            CHECK (! looksMistuned (r));
+        }
+    }
+
+    // A healthy font doesn't trigger the prompt.
+    std::vector<TestPreset> good { { "A", 0, 0, tone (c5, 22050), 60 }, { "B", 0, 1, tone (c5 * 2, 22050), 72 },
+                                   { "Kit", 128, 0, noise (8000), 60, 0, 0, false } };
+    const auto gb = buildFont (good);
+    auto gsf = SoundFont::loadFromMemory (gb.data(), gb.size(), err);
+    CHECK (gsf != nullptr);
+    if (gsf) CHECK (! looksMistuned (analyzeTuning (*gsf, { false, 15.0 })));
+}
+
 int main()
 {
     testParser();
@@ -717,6 +1011,9 @@ int main()
     testVoiceLimitAndGlide();
     testAnalogStage();
     testVoiceRegistry();
+    testVibratoAndTuning();
+    testPitchDetection();
+    testTuningAnalysis();
 
     if (failures == 0) std::printf ("\nAll tests passed.\n");
     else std::printf ("\n%d check(s) failed.\n", failures);

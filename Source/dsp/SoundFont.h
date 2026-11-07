@@ -71,8 +71,10 @@ public:
     static std::unique_ptr<SoundFont> loadFromFile (const std::string& path, std::string& error);
 
     std::string name;                 // INFO/INAM
-    std::vector<int16_t> samples;     // whole 16-bit sample pool (smpl chunk)
+    std::shared_ptr<const std::vector<int16_t>> pool;   // whole 16-bit sample pool (smpl chunk), shared by copies
     std::vector<Preset> presets;      // sorted by bank, then program
+
+    const std::vector<int16_t>& samples() const { return *pool; }
 
     /** Index of the preset with this bank/program, or -1. */
     int findPreset (int bank, int program) const;

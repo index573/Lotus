@@ -265,6 +265,8 @@ void Synth::startVoice (const Region& r, int key, int velocity, uint32_t noteId)
 
     v.glideCents = 0.0f;
     v.glideRate = 0.0f;
+    v.vibTime = 0.0;
+    v.vibCents = 0.0f;
     if (params.glide > 0.0f && lastKey >= 0 && lastKey != key)
     {
         v.glideCents = (float) (lastKey - key) * 100.0f;
@@ -300,7 +302,8 @@ void Synth::updatePitch (Voice& v) const
 {
     const Region& r = *v.region;
     const double cents = (v.pitchKey - r.rootKey) * (double) r.scaleTuning + r.tuneCents
-                       + (double) pitchBend * params.bendRange * 100.0 + v.glideCents;
+                       + (double) pitchBend * params.bendRange * 100.0 + v.glideCents
+                       + v.vibCents + params.tuneCents;
     const double rel = std::pow (2.0, cents / 1200.0);
     const double playbackHz = r.sampleRate * rel;
 
@@ -378,12 +381,25 @@ void Synth::updatePitch (Voice& v) const
     v.step = (int64_t) (ratio * (double) fracOne);
 }
 
+float Synth::vibratoCents (double t) const
+{
+    if (params.vibAmount <= 0.0f || t < params.vibDelay) return 0.0f;
+    const double since = t - params.vibDelay;
+    const double fade = params.vibAttack > 0.0f ? std::min (1.0, since / params.vibAttack) : 1.0;
+    const double phase = since * params.vibSpeed;   // cycles
+    const double s = std::sin (2.0 * 3.14159265358979323846 * phase);
+    double shape = s;
+    if (params.vibShape == 1)      shape = (2.0 / 3.14159265358979323846) * std::asin (s);   // triangle
+    else if (params.vibShape == 2) shape = s >= 0.0 ? 1.0 : -1.0;                           // square
+    return (float) (params.vibAmount * fade * shape);
+}
+
 template <Interp interp>
 void Synth::renderVoice (Voice& v, float* outL, float* outR, int n, float gainL, float gainR)
 {
     const Region& r = *v.region;
     const bool coded = codedPool != nullptr && codedPoolCodec == profile->codec && params.nativeFormat;
-    const int16_t* pool = coded ? codedPool->data() : soundFont->samples.data();
+    const int16_t* pool = coded ? codedPool->data() : soundFont->samples().data();
     const int64_t start = r.start, end = r.end, loopStart = r.loopStart, loopEnd = r.loopEnd;
     const int64_t loopLen = loopEnd - loopStart;
     const bool eightBit = profile->sampleBits == 8;
@@ -493,6 +509,7 @@ void Synth::renderEngine (float* outL, float* outR, int n)
         for (int done = 0; done < n && v.active; done += chunk)
         {
             const int len = std::min (chunk, n - done);
+            v.vibCents = vibratoCents (v.vibTime);
             updatePitch (v);
 
             switch (profile->interp)
@@ -504,6 +521,8 @@ void Synth::renderEngine (float* outL, float* outR, int n)
                 case Interp::Ps1Gauss:  renderVoice<Interp::Ps1Gauss>  (v, outL + done, outR + done, len, gl, gr); break;
                 case Interp::N64Poly:   renderVoice<Interp::N64Poly>   (v, outL + done, outR + done, len, gl, gr); break;
             }
+
+            v.vibTime += (double) len / engineRate;
 
             if (v.glideCents != 0.0f)
             {

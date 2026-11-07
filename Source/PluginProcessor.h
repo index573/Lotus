@@ -4,6 +4,7 @@
 
 #include "dsp/Codecs.h"
 #include "dsp/Synth.h"
+#include "dsp/TuningAnalysis.h"
 #include "dsp/VoiceRegistry.h"
 
 #include <thread>
@@ -23,6 +24,12 @@ namespace ParamIDs
     inline constexpr const char* volume       = "volume";
     inline constexpr const char* bendRange    = "bendRange";
     inline constexpr const char* glide        = "glide";
+    inline constexpr const char* tune         = "tune";         // cents relative to A4 = 440 Hz
+    inline constexpr const char* vibAmount    = "vibAmount";
+    inline constexpr const char* vibSpeed     = "vibSpeed";
+    inline constexpr const char* vibDelay     = "vibDelay";
+    inline constexpr const char* vibAttack    = "vibAttack";
+    inline constexpr const char* vibShape     = "vibShape";
 
     inline constexpr const char* snesOn       = "snesEchoOn";
     inline constexpr const char* snesDelay    = "snesEchoDelay";
@@ -37,6 +44,10 @@ namespace ParamIDs
     inline constexpr const char* ps1Depth     = "ps1ReverbDepth";
     inline constexpr const char* ledOn        = "amigaLedFilter";
 }
+
+/** Tuning as text: "+12.5 c" or "A4 = 442.0 Hz". Parsing accepts either form. */
+juce::String formatTuning (float cents, bool asHz);
+float parseTuning (const juce::String& text, bool bareNumbersAreHz);
 
 class LotusProcessor final : public juce::AudioProcessor,
                              private juce::Timer
@@ -70,8 +81,34 @@ public:
     void getStateInformation (juce::MemoryBlock& destData) override;
     void setStateInformation (const void* data, int sizeInBytes) override;
 
-    /** Loads an SF2 on the message thread. Returns an empty string or the error. */
-    juce::String loadSoundFont (const juce::File& file);
+    /** Loads an SF2 on the message thread. Returns an empty string or the error.
+        A load the user started (drag and drop, Load SF2) also runs the tuning check. */
+    juce::String loadSoundFont (const juce::File& file, bool userInitiated = false);
+
+    // --- Tuning check ------------------------------------------------------------
+    enum class TuningPhase { Idle, Scanning, Ask, Analyzing, Review, AskSave, Done };
+    enum class TuningOutcome { None, Saved, Kept, NothingChanged, SaveFailed };
+    enum class SaveChoice { Save, SaveAs, KeepInProject, Cancel };
+    struct TuningRow { lotus::PresetTuning info; bool apply = false; };
+
+    void startTuningCheck (bool automatic);   // automatic: quick scan, ask only if something looks wrong
+    void answerTuningPrompt (bool fix);
+    void cancelTuningCheck();
+    void setTuningRowApply (int row, bool apply);
+    void previewTuningRow (int row, bool fixed);
+    void finishTuningReview();
+    void saveTuningFixes (SaveChoice choice, const juce::File& saveAsFile = {});
+    void dismissTuningMessage();
+
+    TuningPhase getTuningPhase() const { return tuningPhase; }
+    int getTuningDone() const { return tuningProgressDone.load(); }
+    int getTuningTotal() const { return tuningProgressTotal.load(); }
+    const std::vector<TuningRow>& getTuningRows() const { return tuningRows; }
+    TuningOutcome getTuningOutcome() const { return tuningOutcome; }
+    juce::String getTuningDetail() const { return tuningDetail; }
+    juce::File getFixedSaveTarget() const;
+    int getStoredCorrectionCount() const { return (int) storedCorrections.size(); }
+    void clearStoredCorrections();
 
     const lotus::SoundFont* getSoundFont() const { return soundFont.get(); }
     juce::File getSoundFontFile() const { return soundFontFile; }
@@ -102,8 +139,16 @@ private:
     void startEncoding (lotus::Codec codec);
     void stopEncoding();
 
+    void installSoundFont (std::shared_ptr<const lotus::SoundFont> active);
+    void applyStoredCorrections();
+    void startTuningWorker (bool thorough);
+    void stopTuningWorker();
+    void stopPreview();
+
     lotus::Synth synth;
-    std::shared_ptr<const lotus::SoundFont> soundFont;
+    std::shared_ptr<const lotus::SoundFont> soundFont;         // what plays (with any fixes kept in the project)
+    std::shared_ptr<const lotus::SoundFont> loadedSoundFont;   // as read from disk
+    lotus::TuningCorrections storedCorrections;
     juce::File soundFontFile;
     juce::SpinLock engineLock;   // guards SoundFont/pool swaps; the audio thread only try-locks
 
@@ -117,7 +162,25 @@ private:
     std::atomic<bool> cancelEncode { false }, encoding { false }, encodeDone { false };
     std::unique_ptr<std::vector<int16_t>> encodedResult, installedPool;
     lotus::Codec encodingCodec = lotus::Codec::None, installedCodec = lotus::Codec::None;
-    const lotus::SoundFont* encodedFrom = nullptr;
+    const std::vector<int16_t>* encodedFrom = nullptr;   // the sample pool that was encoded
+
+    // Tuning check
+    std::thread tuningWorker;
+    std::atomic<bool> tuningCancel { false }, tuningDoneFlag { false };
+    std::atomic<int> tuningProgressDone { 0 }, tuningProgressTotal { 0 };
+    std::vector<lotus::PresetTuning> tuningResult;   // handed over when tuningDoneFlag is set
+    double tuningStartedMs = 0.0;
+    TuningPhase tuningPhase = TuningPhase::Idle;
+    TuningOutcome tuningOutcome = TuningOutcome::None;
+    juce::String tuningDetail;
+    std::vector<TuningRow> tuningRows;
+    std::shared_ptr<const lotus::SoundFont> tuningSource, previewFixed;
+
+    // Before/after audition
+    lotus::Synth previewSynth;
+    std::vector<float> previewL, previewR;
+    double previewOffAtMs = 0.0;
+    bool previewPlaying = false;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (LotusProcessor)
 };

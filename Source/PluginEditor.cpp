@@ -1,4 +1,5 @@
 #include "PluginEditor.h"
+#include "ui/Strings.h"
 
 #include <algorithm>
 
@@ -27,36 +28,53 @@ const EffectInfo effectInfo[] =
       "The Amiga's switchable 12 dB/oct low-pass at about 3.1 kHz. It was wired to the power LED, and games and trackers flicked it on for a darker sound." },
 };
 
-// Singular and plural names for the verdict popup.
+// English singular/plural names for the verdict popup (other languages translate the singular).
 juce::String consoleNoun (lotus::ConsoleId id, bool plural)
 {
     using C = lotus::ConsoleId;
+    juce::String one, many;
     switch (id)
     {
-        case C::Nes:        return plural ? "NESes" : "NES";
-        case C::Snes:       return plural ? "SNESes" : "SNES";
-        case C::N64:        return plural ? "N64s" : "N64";
-        case C::Gba:        return plural ? "GBAs" : "GBA";
-        case C::NintendoDs: return plural ? "Nintendo DSes" : "Nintendo DS";
-        case C::Ps1:        return plural ? "PS1s" : "PS1";
-        case C::Ps2:        return plural ? "PS2s" : "PS2";
-        case C::MegaDrive:  return plural ? "Mega Drives" : "Mega Drive";
-        case C::Saturn:     return plural ? "Saturns" : "Saturn";
-        case C::Amiga500:   return plural ? "Amiga 500s" : "Amiga 500";
-        case C::Amiga1200:  return plural ? "Amiga 1200s" : "Amiga 1200";
-        case C::Modern: case C::Linear: case C::Raw: case C::count: break;
+        case C::Nes:        one = "NES";         many = "NESes"; break;
+        case C::Snes:       one = "SNES";        many = "SNESes"; break;
+        case C::N64:        one = "N64";         many = "N64s"; break;
+        case C::Gba:        one = "GBA";         many = "GBAs"; break;
+        case C::NintendoDs: one = "Nintendo DS"; many = "Nintendo DSes"; break;
+        case C::Ps1:        one = "PS1";         many = "PS1s"; break;
+        case C::Ps2:        one = "PS2";         many = "PS2s"; break;
+        case C::MegaDrive:  one = "Mega Drive";  many = "Mega Drives"; break;
+        case C::Saturn:     one = "Saturn";      many = "Saturns"; break;
+        case C::Amiga500:   one = "Amiga 500";   many = "Amiga 500s"; break;
+        case C::Amiga1200:  one = "Amiga 1200";  many = "Amiga 1200s"; break;
+        case C::Modern: case C::Linear: case C::Raw: case C::count: one = "computer"; many = "computers"; break;
     }
-    return plural ? "computers" : "computer";
+    if (language() != Language::English) return tr (one);
+    return plural ? many : one;
 }
 
 juce::String verdictQuip (int n)
 {
-    if (n == 1) return "Great job!";
-    if (n == 2) return "You got a spare, right?";
-    if (n == 3) return "Time to raid the attic.";
-    if (n == 4) return "Is this a LAN party?";
-    if (n <= 7) return "That's a shelf, not a console.";
-    return "You're running a museum now.";
+    if (n == 1) return tr ("Great job!");
+    if (n == 2) return tr ("You got a spare, right?");
+    if (n == 3) return tr ("Time to raid the attic.");
+    if (n == 4) return tr ("Is this a LAN party?");
+    if (n <= 7) return tr ("That's a shelf, not a console.");
+    return tr ("You're running a museum now.");
+}
+
+// Japanese runs sentences together; English separates them with a space.
+juce::String gap() { return language() == Language::Japanese ? juce::String() : juce::String (" "); }
+
+juce::String voicesText (int n) { return trf (n == 1 ? "{n} voice" : "{n} voices", { { "n", juce::String (n) } }); }
+juce::String tracksText (int n) { return trf (n == 1 ? "{n} track" : "{n} tracks", { { "n", juce::String (n) } }); }
+
+juce::String joinList (juce::StringArray items)
+{
+    if (language() == Language::Japanese) return items.joinIntoString (juce::String::fromUTF8 ("\xe3\x80\x81"));
+    if (items.size() <= 1) return items.joinIntoString ({});
+    const auto last = items[items.size() - 1];
+    items.remove (items.size() - 1);
+    return items.joinIntoString (", ") + " and " + last;
 }
 
 void styleSmallLabel (juce::Label& l, float size = 11.5f, bool caps = false)
@@ -83,31 +101,32 @@ LotusEditor::LotusEditor (LotusProcessor& p)
       volumeKnob (p.params, ParamIDs::volume,    "Volume"),
       bendKnob   (p.params, ParamIDs::bendRange, "Bend"),
       glideKnob  (p.params, ParamIDs::glide,     "Glide"),
+      vibShapeSwitch (p.params, ParamIDs::vibShape, { "Sine", "Triangle", "Square" }),
+      vibAmountKnob (p.params, ParamIDs::vibAmount, "Amount"),
+      vibSpeedKnob  (p.params, ParamIDs::vibSpeed,  "Speed"),
+      vibDelayKnob  (p.params, ParamIDs::vibDelay,  "Delay"),
+      vibAttackKnob (p.params, ParamIDs::vibAttack, "Attack"),
+      tuneKnob (p.params, ParamIDs::tune, "Tune"),
       snesFilter (p.params, ParamIDs::snesFilter, { "Flat", "Low", "High", "Band" }),
       snesDelayKnob    (p.params, ParamIDs::snesDelay,    "Delay"),
       snesFeedbackKnob (p.params, ParamIDs::snesFeedback, "Feedback"),
       snesVolumeKnob   (p.params, ParamIDs::snesVolume,   "Volume"),
       n64MixKnob   (p.params, ParamIDs::n64Mix,   "Mix"),
-      ps1DepthKnob (p.params, ParamIDs::ps1Depth, "Depth")
+      ps1DepthKnob (p.params, ParamIDs::ps1Depth, "Depth"),
+      tuningDialog (p)
 {
     setLookAndFeel (&lnf);
     addAndMakeVisible (content);
 
     // Header and preset bar
-    content.addAndMakeVisible (logo);
-    content.addAndMakeVisible (pageTabs);
-    content.addAndMakeVisible (loadButton);
+    for (auto* c : std::initializer_list<juce::Component*> { &logo, &languageButton, &pageTabs, &loadButton, &presetCard,
+                                                              &prevButton, &presetBox, &nextButton, &infoLabel })
+        content.addAndMakeVisible (c);
     pageTabs.onChange = [this] (int pg) { showPage (pg); };
     loadButton.onClick = [this] { openFileChooser(); };
-    loadButton.setTooltip ("Load a SoundFont (.sf2). You can also drag one onto the window.");
-
-    content.addAndMakeVisible (presetCard);
-    for (auto* c : std::initializer_list<juce::Component*> { &prevButton, &presetBox, &nextButton, &infoLabel })
-        content.addAndMakeVisible (c);
+    languageButton.onClick = [this] { showLanguageMenu(); };
     prevButton.onClick = [this] { stepPreset (-1); };
     nextButton.onClick = [this] { stepPreset (+1); };
-    prevButton.setTooltip ("Previous preset");
-    nextButton.setTooltip ("Next preset");
     presetBox.onChange = [this]
     {
         const int idx = presetBox.getSelectedId() - 1;
@@ -121,49 +140,38 @@ LotusEditor::LotusEditor (LotusProcessor& p)
     infoLabel.setInterceptsMouseClicks (false, false);
 
     // Sound page
-    soundPage = { &envCard, &envelopeView, &attackKnob, &decayKnob, &sustainKnob, &releaseKnob,
-                  &consoleCard, &consoleBox, &formatChip, &voicesChip, &songMeter,
-                  &playCard, &noteOffLabel, &noteOffSwitch, &envSourceLabel, &envSourceSwitch,
-                  &outputCard, &volumeKnob, &bendKnob, &glideKnob };
-
-    attackKnob.getSlider().setTooltip ("Fade-in time. 0 = instant.");
-    decayKnob.getSlider().setTooltip ("Time to fall from full level to the sustain level.");
-    sustainKnob.getSlider().setTooltip ("Level held while the key is down.");
-    releaseKnob.getSlider().setTooltip ("Time from note-off to silence. Exact: 0 stops dead.");
-
-    juce::String lastGroup;
-    for (int i = 0; i < lotus::numConsoles; ++i)
-    {
-        const auto& prof = lotus::getConsoleProfile ((lotus::ConsoleId) i);
-        if (lastGroup != prof.group)
-        {
-            consoleBox.addSectionHeading (prof.group);
-            lastGroup = prof.group;
-        }
-        consoleBox.addItem (prof.name, i + 1);
-    }
+    pages[soundPage] = { &envCard, &envelopeView, &attackKnob, &decayKnob, &sustainKnob, &releaseKnob,
+                         &consoleCard, &consoleBox, &formatChip, &voicesChip, &songMeter,
+                         &playCard, &noteOffLabel, &noteOffSwitch, &envSourceLabel, &envSourceSwitch,
+                         &outputCard, &volumeKnob, &bendKnob, &glideKnob };
     consoleAttachment = std::make_unique<juce::AudioProcessorValueTreeState::ComboBoxAttachment> (p.params, ParamIDs::console, consoleBox);
     consoleBox.onChange = [this] { refreshConsole(); };
-    formatChip.setTooltip ("Play the samples as they'd sound after conversion to the console's own format "
-                           "(BRR, ADPCM, DPCM). Converting takes a moment after switching.");
     songMeter.onClick = [this] { showVerdict(); };
     verdict.onReset = [this] { lotus::VoiceRegistry::get().resetPeak (processor.getConsole()); };
-    voicesChip.setTooltip ("Limit polyphony to the console's hardware voices. Extra notes steal the oldest, like the real thing.");
-
-    for (auto* l : { &noteOffLabel, &envSourceLabel }) styleSmallLabel (*l, 12.5f);
-    noteOffLabel.setText ("Note off", juce::dontSendNotification);
-    envSourceLabel.setText ("Envelope", juce::dontSendNotification);
-    noteOffLabel.setJustificationType (juce::Justification::centredLeft);
-    envSourceLabel.setJustificationType (juce::Justification::centredLeft);
-    noteOffSwitch.setTooltip ("Release: notes fade out over the release time.\nCut: notes stop the moment the key is let go.");
-    envSourceSwitch.setTooltip ("Lotus: use the ADSR knobs.\nSF2: use the envelopes stored in the SoundFont.");
+    for (auto* l : { &noteOffLabel, &envSourceLabel })
+    {
+        styleSmallLabel (*l, 12.5f);
+        l->setJustificationType (juce::Justification::centredLeft);
+    }
     noteOffSwitch.onChange = [this] (int) { updateEnablement(); };
     envSourceSwitch.onChange = [this] (int) { updateEnablement(); };
 
-    bendKnob.getSlider().setTooltip ("Pitch bend range in semitones.");
-    glideKnob.getSlider().setTooltip ("Slide from the previous note's pitch. 0 = off.");
-
-    for (auto* c : soundPage) content.addChildComponent (c);
+    // Pitch page
+    pages[pitchPage] = { &vibCard, &vibratoView, &vibShapeSwitch, &vibAmountKnob, &vibSpeedKnob, &vibDelayKnob, &vibAttackKnob,
+                         &tuneCard, &tuneKnob, &tuneUnitSwitch, &tuneHint,
+                         &sfTuneCard, &sfTuneText, &sfTuneStatus, &checkTuningButton, &clearFixesButton };
+    styleSmallLabel (tuneHint);
+    styleSmallLabel (sfTuneText, 12.0f);
+    styleSmallLabel (sfTuneStatus, 12.0f);
+    sfTuneStatus.setColour (juce::Label::textColourId, Palette::leaf);
+    tuneUnitSwitch.setSelected (tuneInHz() ? 1 : 0);
+    tuneUnitSwitch.onChange = [this] (int unit)
+    {
+        processor.params.state.setProperty ("tuneUnit", unit, nullptr);
+        refreshTuneText();
+    };
+    checkTuningButton.onClick = [this] { processor.startTuningCheck (false); };
+    clearFixesButton.onClick = [this] { processor.clearStoredCorrections(); refreshCorrectionsStatus(); };
 
     // Effects page
     for (int i = 0; i < numEffects; ++i)
@@ -171,40 +179,32 @@ LotusEditor::LotusEditor (LotusProcessor& p)
         fxRows[(size_t) i] = std::make_unique<EffectRow> (effectInfo[i].name, effectInfo[i].console);
         fxRows[(size_t) i]->onClick = [this, i] { showEffect (i); };
         fxSwitches[(size_t) i] = std::make_unique<Switch> (p.params, effectInfo[i].onParam);
-        fxSwitches[(size_t) i]->setTooltip (juce::String ("Turn the ") + effectInfo[i].name + " on or off.");
         fxSwitches[(size_t) i]->onChange = [this] (bool) { updateEnablement(); };
     }
-
     styleSmallLabel (fxDesc, 12.5f);
     styleSmallLabel (fxControlLabel, 11.0f, true);
     styleSmallLabel (fxHint, 12.0f);
     fxHint.setColour (juce::Label::textColourId, Palette::leaf);
-
-    for (int i = 0; i < lotus::numN64FxPresets; ++i) n64PresetBox.addItem (lotus::n64FxPresetName (i), i + 1);
-    for (int i = 0; i < lotus::numPs1ReverbPresets; ++i) ps1PresetBox.addItem (lotus::ps1ReverbPresetName (i), i + 1);
     n64PresetAttachment = std::make_unique<juce::AudioProcessorValueTreeState::ComboBoxAttachment> (p.params, ParamIDs::n64Preset, n64PresetBox);
     ps1PresetAttachment = std::make_unique<juce::AudioProcessorValueTreeState::ComboBoxAttachment> (p.params, ParamIDs::ps1Preset, ps1PresetBox);
-
-    snesFilter.setTooltip ("Echo FIR filter: the four presets from Nintendo's standard SNES sound driver.");
-    snesDelayKnob.getSlider().setTooltip ("EDL: echo delay in 16 ms steps.");
-    snesFeedbackKnob.getSlider().setTooltip ("EFB: feedback. Negative values flip the phase of each repeat.");
-    snesVolumeKnob.getSlider().setTooltip ("EVOL: echo return level.");
-    n64MixKnob.getSlider().setTooltip ("Effect send level.");
-    ps1DepthKnob.getSlider().setTooltip ("Reverb return level.");
 
     effectControls[snes] = { &snesFilter, &snesDelayKnob, &snesFeedbackKnob, &snesVolumeKnob };
     effectControls[n64] = { &n64PresetBox, &n64MixKnob };
     effectControls[ps1] = { &ps1PresetBox, &ps1DepthKnob };
     effectControls[led] = {};
 
-    effectsPage = { &fxListCard, &fxCard, &fxDesc, &fxControlLabel, &fxHint };
-    for (auto& r : fxRows) effectsPage.push_back (r.get());
-    for (auto* c : effectsPage) content.addChildComponent (c);
+    pages[effectsPage] = { &fxListCard, &fxCard, &fxDesc, &fxControlLabel, &fxHint };
+    for (auto& r : fxRows) pages[effectsPage].push_back (r.get());
+
+    for (auto& list : pages)
+        for (auto* c : list) content.addChildComponent (c);
     for (auto& sw : fxSwitches) content.addChildComponent (sw.get());
     for (auto& list : effectControls)
         for (auto* c : list) content.addChildComponent (c);
 
     content.addChildComponent (verdict);
+    content.addChildComponent (tuningDialog);
+    tuningDialog.onSaveAs = [this] { saveAsChooser(); };
 
     setResizable (true, true);
     setResizeLimits (baseWidth * 3 / 4, baseHeight * 3 / 4, baseWidth * 2, baseHeight * 2);
@@ -213,10 +213,9 @@ LotusEditor::LotusEditor (LotusProcessor& p)
     setSize (baseWidth, baseHeight);
 
     sendLookAndFeelChange();
-    refreshPresetList();
-    refreshConsole();
+    applyLanguage();
     updateEnablement();
-    showPage (0);
+    showPage (soundPage);
     startTimerHz (30);
 }
 
@@ -231,11 +230,112 @@ float LotusEditor::param (const char* id) const
     return processor.params.getRawParameterValue (id)->load();
 }
 
+bool LotusEditor::tuneInHz() const
+{
+    return (int) processor.params.state.getProperty ("tuneUnit", 0) == 1;
+}
+
+// ---------------------------------------------------------------------------------
+// Language
+
+void LotusEditor::applyLanguage()
+{
+    seenLanguage = languageGeneration();
+
+    loadButton.setButtonText (tr ("Load SF2"));
+    loadButton.setTooltip (tr ("Load a SoundFont (.sf2). You can also drag one onto the window."));
+    languageButton.setTooltip (tr ("Language"));
+    prevButton.setTooltip (tr ("Previous preset"));
+    nextButton.setTooltip (tr ("Next preset"));
+
+    attackKnob.getSlider().setTooltip (tr ("Fade-in time. 0 = instant."));
+    decayKnob.getSlider().setTooltip (tr ("Time to fall from full level to the sustain level."));
+    sustainKnob.getSlider().setTooltip (tr ("Level held while the key is down."));
+    releaseKnob.getSlider().setTooltip (tr ("Time from note-off to silence. Exact: 0 stops dead."));
+    formatChip.setTooltip (tr ("Play the samples as they'd sound after conversion to the console's own format (BRR, ADPCM, DPCM). Converting takes a moment after switching."));
+    voicesChip.setTooltip (tr ("Limit polyphony to the console's hardware voices. Extra notes steal the oldest, like the real thing."));
+    noteOffLabel.setText (tr ("Note off"), juce::dontSendNotification);
+    envSourceLabel.setText (tr ("Envelope"), juce::dontSendNotification);
+    noteOffSwitch.setTooltip (tr ("Release: notes fade out over the release time.\nCut: notes stop the moment the key is let go."));
+    envSourceSwitch.setTooltip (tr ("Lotus: use the ADSR knobs.\nSF2: use the envelopes stored in the SoundFont."));
+    bendKnob.getSlider().setTooltip (tr ("Pitch bend range in semitones."));
+    glideKnob.getSlider().setTooltip (tr ("Slide from the previous note's pitch. 0 = off."));
+
+    vibAmountKnob.getSlider().setTooltip (tr ("How far the pitch swings, in cents (100 cents = 1 semitone). 0 = off."));
+    vibSpeedKnob.getSlider().setTooltip (tr ("How fast the pitch swings."));
+    vibDelayKnob.getSlider().setTooltip (tr ("How long a note holds steady before the vibrato starts."));
+    vibAttackKnob.getSlider().setTooltip (tr ("How long the vibrato takes to fade in."));
+    vibShapeSwitch.setTooltip (tr ("Vibrato shape."));
+    tuneKnob.getSlider().setTooltip (tr ("Master tuning. Type cents (-31.8) or Hz (432 Hz). Double-click to reset to A4 = 440 Hz."));
+    tuneHint.setText (tr ("Standard pitch is A4 = 440 Hz. Click the value to type cents or Hz."), juce::dontSendNotification);
+    sfTuneText.setText (tr ("Finds presets with wrong root notes or detuned samples by measuring each one at C5 (middle C, MIDI 60) against A4 = 440 Hz. Drum kits and sounds without a clear pitch are left alone."),
+                        juce::dontSendNotification);
+    checkTuningButton.setButtonText (tr ("Check tuning..."));
+    checkTuningButton.setTooltip (tr ("Analyse this SoundFont now."));
+    clearFixesButton.setButtonText (tr ("Clear fixes"));
+    clearFixesButton.setTooltip (tr ("Remove the tuning fixes stored in this project."));
+
+    for (int i = 0; i < numEffects; ++i)
+        fxSwitches[(size_t) i]->setTooltip (trf ("Turn the {effect} on or off.", { { "effect", tr (effectInfo[i].name) } }));
+    snesFilter.setTooltip (tr ("Echo FIR filter: the four presets from Nintendo's standard SNES sound driver."));
+    snesDelayKnob.getSlider().setTooltip (tr ("EDL: echo delay in 16 ms steps."));
+    snesFeedbackKnob.getSlider().setTooltip (tr ("EFB: feedback. Negative values flip the phase of each repeat."));
+    snesVolumeKnob.getSlider().setTooltip (tr ("EVOL: echo return level."));
+    n64MixKnob.getSlider().setTooltip (tr ("Effect send level."));
+    ps1DepthKnob.getSlider().setTooltip (tr ("Reverb return level."));
+
+    // Combo boxes: same ids, translated text.
+    {
+        const int sel = consoleBox.getSelectedId();
+        consoleBox.clear (juce::dontSendNotification);
+        juce::String lastGroup;
+        for (int i = 0; i < lotus::numConsoles; ++i)
+        {
+            const auto& prof = lotus::getConsoleProfile ((lotus::ConsoleId) i);
+            if (lastGroup != prof.group) { consoleBox.addSectionHeading (tr (prof.group)); lastGroup = prof.group; }
+            consoleBox.addItem (tr (prof.name), i + 1);
+        }
+        consoleBox.setSelectedId (sel > 0 ? sel : (int) processor.getConsole() + 1, juce::dontSendNotification);
+    }
+    for (auto [box, count, nameOf, id] : { std::make_tuple (&n64PresetBox, lotus::numN64FxPresets, &lotus::n64FxPresetName, ParamIDs::n64Preset),
+                                           std::make_tuple (&ps1PresetBox, lotus::numPs1ReverbPresets, &lotus::ps1ReverbPresetName, ParamIDs::ps1Preset) })
+    {
+        box->clear (juce::dontSendNotification);
+        for (int i = 0; i < count; ++i) box->addItem (tr (nameOf (i)), i + 1);
+        box->setSelectedId ((int) param (id) + 1, juce::dontSendNotification);
+    }
+
+    refreshPresetList();
+    refreshConsole();
+    refreshTuneText();
+    refreshCorrectionsStatus();
+    showEffect (selectedEffect);
+    tuningDialog.refreshTexts();
+    content.repaint();
+}
+
+void LotusEditor::showLanguageMenu()
+{
+    juce::PopupMenu menu;
+    menu.addSectionHeader (tr ("Language"));
+    menu.addItem (1, "English", true, language() == Language::English);
+    menu.addItem (2, juce::String::fromUTF8 ("\xe6\x97\xa5\xe6\x9c\xac\xe8\xaa\x9e"), true, language() == Language::Japanese);
+    menu.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&languageButton), [this] (int result)
+    {
+        if (result == 0) return;
+        setLanguage (result == 2 ? Language::Japanese : Language::English);
+        applyLanguage();
+    });
+}
+
+// ---------------------------------------------------------------------------------
+// Pages
+
 void LotusEditor::showPage (int pg)
 {
     page = pg;
-    for (auto* c : soundPage) c->setVisible (pg == 0);
-    for (auto* c : effectsPage) c->setVisible (pg == 1);
+    for (int i = 0; i < numPages; ++i)
+        for (auto* c : pages[(size_t) i]) c->setVisible (i == pg);
     pageTabs.setSelected (pg);
     showEffect (selectedEffect);
 }
@@ -243,7 +343,7 @@ void LotusEditor::showPage (int pg)
 void LotusEditor::showEffect (int effect)
 {
     selectedEffect = effect;
-    const bool fxPage = page == 1;
+    const bool fxPage = page == effectsPage;
 
     for (int i = 0; i < numEffects; ++i)
     {
@@ -254,13 +354,16 @@ void LotusEditor::showEffect (int effect)
 
     const auto& info = effectInfo[effect];
     fxCard.setTitle (info.name);
-    fxDesc.setText (info.description, juce::dontSendNotification);
-    fxControlLabel.setText (effect == snes ? "FILTER" : (effect == led ? "" : "TYPE"), juce::dontSendNotification);
+    fxDesc.setText (tr (info.description), juce::dontSendNotification);
+    fxControlLabel.setText (effect == snes ? tr ("FILTER") : (effect == led ? juce::String() : tr ("TYPE")), juce::dontSendNotification);
     fxControlLabel.setVisible (fxPage && effect != led);
 
     content.resized();
     updateEnablement();
 }
+
+// ---------------------------------------------------------------------------------
+// Layout & painting
 
 void LotusEditor::paint (juce::Graphics& g)
 {
@@ -280,7 +383,7 @@ void LotusEditor::paintOverChildren (juce::Graphics& g)
     juce::PathStrokeType (2.0f).createDashedStroke (dashed, border, dash, 2);
     g.fillPath (dashed);
     g.setFont (font (20.0f, true));
-    g.drawText ("Drop to load SoundFont", getLocalBounds(), juce::Justification::centred);
+    g.drawText (tr ("Drop to load SoundFont"), getLocalBounds(), juce::Justification::centred);
 }
 
 void LotusEditor::resized()
@@ -305,21 +408,24 @@ void LotusEditor::Content::paint (juce::Graphics& g)
     g.drawText ("Lotus", logoB.getRight() + 10, logoB.getY() + 1, 200, 26, juce::Justification::centredLeft);
     g.setColour (Palette::textDim);
     g.setFont (font (12.5f));
-    g.drawText ("SoundFont player for video game music", logoB.getRight() + 11, logoB.getY() + 27, 300, 16,
-                juce::Justification::centredLeft);
+    g.drawText (tr ("SoundFont player for video game music"), logoB.getRight() + 11, logoB.getY() + 27,
+                editor.languageButton.getX() - logoB.getRight() - 16, 16, juce::Justification::centredLeft);
 }
 
 void LotusEditor::Content::resized()
 {
     auto& e = editor;
     e.verdict.setBounds (getLocalBounds());
+    e.tuningDialog.setBounds (getLocalBounds());
     auto r = getLocalBounds().reduced (20, 16);
 
     auto header = r.removeFromTop (46);
     e.logo.setBounds (header.removeFromLeft (46));
     e.loadButton.setBounds (header.removeFromRight (120).withSizeKeepingCentre (120, 34));
-    header.removeFromRight (16);
-    e.pageTabs.setBounds (header.removeFromRight (190).withSizeKeepingCentre (190, 34));
+    header.removeFromRight (14);
+    e.pageTabs.setBounds (header.removeFromRight (252).withSizeKeepingCentre (252, 34));
+    header.removeFromRight (8);
+    e.languageButton.setBounds (header.removeFromRight (34).withSizeKeepingCentre (34, 34));
     r.removeFromTop (12);
 
     auto bar = r.removeFromTop (54);
@@ -327,7 +433,7 @@ void LotusEditor::Content::resized()
     auto barIn = bar.reduced (10, 10);
     e.prevButton.setBounds (barIn.removeFromLeft (34));
     barIn.removeFromLeft (6);
-    e.infoLabel.setBounds (barIn.removeFromRight (180));
+    e.infoLabel.setBounds (barIn.removeFromRight (190));
     barIn.removeFromRight (8);
     e.nextButton.setBounds (barIn.removeFromRight (34));
     barIn.removeFromRight (6);
@@ -336,6 +442,7 @@ void LotusEditor::Content::resized()
 
     const auto inside = [] (const Card& c) { return c.getContentBounds().translated (c.getX(), c.getY()); };
 
+    // --- Sound page ---------------------------------------------------------------
     {
         auto area = r;
         auto footer = area.removeFromBottom (124);
@@ -368,11 +475,11 @@ void LotusEditor::Content::resized()
         e.playCard.setBounds (playR);
         auto pIn = inside (e.playCard);
         auto row1 = pIn.removeFromTop (30);
-        e.noteOffLabel.setBounds (row1.removeFromLeft (62));
+        e.noteOffLabel.setBounds (row1.removeFromLeft (76));
         e.noteOffSwitch.setBounds (row1);
         pIn.removeFromTop (8);
         auto row2 = pIn.removeFromTop (30);
-        e.envSourceLabel.setBounds (row2.removeFromLeft (62));
+        e.envSourceLabel.setBounds (row2.removeFromLeft (76));
         e.envSourceSwitch.setBounds (row2);
 
         e.outputCard.setBounds (outR);
@@ -382,6 +489,44 @@ void LotusEditor::Content::resized()
             k->setBounds (oIn.removeFromLeft (ow));
     }
 
+    // --- Pitch page ---------------------------------------------------------------
+    {
+        auto area = r;
+        auto bottom = area.removeFromBottom (124);
+        area.removeFromBottom (12);
+
+        e.vibCard.setBounds (area);
+        auto vIn = inside (e.vibCard);
+        auto right = vIn.removeFromRight (400);
+        vIn.removeFromRight (16);
+        e.vibratoView.setBounds (vIn);
+        e.vibShapeSwitch.setBounds (right.removeFromTop (28).withSizeKeepingCentre (300, 28));
+        right.removeFromTop (6);
+        const int kw = right.getWidth() / 4;
+        for (auto* k : { &e.vibAmountKnob, &e.vibSpeedKnob, &e.vibDelayKnob, &e.vibAttackKnob })
+            k->setBounds (right.removeFromLeft (kw).withSizeKeepingCentre (kw, juce::jmin (right.getHeight(), 104)));
+
+        auto tuneR = bottom.removeFromLeft (300);
+        bottom.removeFromLeft (12);
+        e.tuneCard.setBounds (tuneR);
+        auto tIn = inside (e.tuneCard);
+        e.tuneKnob.setBounds (tIn.removeFromLeft (120).withTrimmedTop (-2).withTrimmedBottom (-6));
+        tIn.removeFromLeft (8);
+        e.tuneUnitSwitch.setBounds (tIn.removeFromTop (28));
+        tIn.removeFromTop (8);
+        e.tuneHint.setBounds (tIn.withTrimmedLeft (-3));
+
+        e.sfTuneCard.setBounds (bottom);
+        auto sIn = inside (e.sfTuneCard);
+        auto buttons = sIn.removeFromBottom (28);
+        e.checkTuningButton.setBounds (buttons.removeFromLeft (150));
+        buttons.removeFromLeft (8);
+        e.clearFixesButton.setBounds (buttons.removeFromLeft (110));
+        e.sfTuneStatus.setBounds (sIn.removeFromBottom (18).withTrimmedLeft (-3));
+        e.sfTuneText.setBounds (sIn.withTrimmedLeft (-3));
+    }
+
+    // --- Effects page -------------------------------------------------------------
     {
         auto area = r;
         auto listR = area.removeFromLeft (200);
@@ -423,10 +568,19 @@ void LotusEditor::Content::resized()
     }
 }
 
+// ---------------------------------------------------------------------------------
+// State sync
+
 void LotusEditor::timerCallback()
 {
+    if (languageGeneration() != seenLanguage)
+        applyLanguage();
+
     if (processor.soundFontGeneration.load() != seenGeneration)
+    {
         refreshPresetList();
+        refreshCorrectionsStatus();
+    }
 
     if (processor.consumePresetChangedByMidi() || processor.getPresetIndex() != seenPreset)
     {
@@ -445,10 +599,14 @@ void LotusEditor::timerCallback()
     if ((int) processor.getConsole() != seenConsole || processor.isEncoding() != seenEncoding)
         refreshConsole();
 
+    if (processor.getStoredCorrectionCount() != seenFixes)
+        refreshCorrectionsStatus();
+
     for (int i = 0; i < numEffects; ++i)
         fxRows[(size_t) i]->setActive (param (effectInfo[i].onParam) > 0.5f);
 
     updateSongMeter();
+    tuningDialog.sync();
 
     EnvelopeView::State s;
     s.attack  = param (ParamIDs::attack);
@@ -458,6 +616,36 @@ void LotusEditor::timerCallback()
     s.cut     = param (ParamIDs::noteOff) > 0.5f;
     s.sf2     = param (ParamIDs::envSource) > 0.5f;
     envelopeView.setState (s);
+
+    VibratoView::State v;
+    v.amount = param (ParamIDs::vibAmount);
+    v.speed  = param (ParamIDs::vibSpeed);
+    v.delay  = param (ParamIDs::vibDelay);
+    v.attack = param (ParamIDs::vibAttack);
+    v.shape  = (int) param (ParamIDs::vibShape);
+    vibratoView.setState (v);
+}
+
+void LotusEditor::refreshTuneText()
+{
+    const bool hz = tuneInHz();
+    auto& slider = tuneKnob.getSlider();
+    slider.textFromValueFunction = [hz] (double v) { return formatTuning ((float) v, hz); };
+    slider.valueFromTextFunction = [hz] (const juce::String& t) { return (double) parseTuning (t, hz); };
+    slider.updateText();
+}
+
+void LotusEditor::refreshCorrectionsStatus()
+{
+    seenFixes = processor.getStoredCorrectionCount();
+    const int n = seenFixes;
+    sfTuneStatus.setText (n == 0 ? juce::String()
+                                 : trf (n == 1 ? "1 preset is adjusted in this project. The .sf2 file is unchanged."
+                                               : "{n} presets are adjusted in this project. The .sf2 file is unchanged.",
+                                        { { "n", juce::String (n) } }),
+                          juce::dontSendNotification);
+    clearFixesButton.setVisible (page == pitchPage && n > 0);
+    checkTuningButton.setEnabled (processor.getSoundFont() != nullptr);
 }
 
 void LotusEditor::updateSongMeter()
@@ -475,14 +663,13 @@ void LotusEditor::updateSongMeter()
 
     if (mismatch)
     {
-        songMeter.setTooltip ("Tracks in this project target different consoles, so limits can't be measured. Click for details.");
+        songMeter.setTooltip (tr ("Tracks in this project target different consoles, so limits can't be measured. Click for details."));
         return;
     }
-
     const int tracks = reg.instancesOn (console);
-    songMeter.setTooltip ("Voices playing right now across " + juce::String (tracks)
-                          + (tracks == 1 ? " Lotus" : " Lotuses") + " set to " + prof.name
-                          + ". Click to see how many consoles your song needs.");
+    songMeter.setTooltip (trf ("Voices playing right now across {count} set to {console}. Click to see how many consoles your song needs.",
+                               { { "count", trf (tracks == 1 ? "{n} Lotus" : "{n} Lotuses", { { "n", juce::String (tracks) } }) },
+                                 { "console", tr (prof.name) } }));
 }
 
 void LotusEditor::showVerdict()
@@ -490,14 +677,12 @@ void LotusEditor::showVerdict()
     const auto inUse = lotus::VoiceRegistry::get().consolesInUse();
     juce::StringArray names;
     for (int i = 0; i < lotus::numConsoles; ++i)
-        if (inUse[(size_t) i]) names.add (lotus::getConsoleProfile ((lotus::ConsoleId) i).name);
+        if (inUse[(size_t) i]) names.add (tr (lotus::getConsoleProfile ((lotus::ConsoleId) i).name));
     if (names.size() > 1)
     {
-        const juce::String last = names[names.size() - 1];
-        names.remove (names.size() - 1);
-        verdict.showConfused ("Console mismatch!",
-                              "This project file uses " + names.joinIntoString (", ") + " and " + last
-                                  + ", so accuracy of limitations can not be measured.");
+        verdict.showConfused (tr ("Console mismatch!"),
+                              trf ("This project file uses {list}, so accuracy of limitations can not be measured.",
+                                   { { "list", joinList (names) } }));
         return;
     }
 
@@ -506,30 +691,33 @@ void LotusEditor::showVerdict()
     auto& reg = lotus::VoiceRegistry::get();
     const int peak = reg.peakTotal (console);
     const int tracks = reg.instancesOn (console);
-    const juce::String across = juce::String (peak) + (peak == 1 ? " voice" : " voices") + " at once across "
-                              + juce::String (tracks) + (tracks == 1 ? " track." : " tracks.");
+    const auto across = trf ("Peak: {voices} at once across {tracks}.", { { "voices", voicesText (peak) }, { "tracks", tracksText (tracks) } });
+    auto takes = [&] (int n)
+    {
+        return trf ("This song takes {n} {consoles} to run.", { { "n", juce::String (n) }, { "consoles", consoleNoun (console, n != 1) } })
+               + gap() + verdictQuip (n);
+    };
 
     if (prof.voiceLimit <= 0)
     {
-        const bool isN64 = console == lotus::ConsoleId::N64;
-        verdict.show (1, "This song takes 1 " + consoleNoun (console, false) + " to run. Great job!",
-                      (isN64 ? juce::String ("The N64 mixes in software, so there's no fixed voice count. ")
-                           : juce::String ("No fixed voice count here. "))
-                          + "Peak: " + across);
+        verdict.show (1, takes (1),
+                      (console == lotus::ConsoleId::N64 ? tr ("The N64 mixes in software, so there's no fixed voice count.")
+                                                        : tr ("No fixed voice count here."))
+                          + gap() + across);
         return;
     }
 
     if (peak == 0)
     {
-        verdict.show (0, "Play your song first!",
-                      "Lotus counts the most voices sounding at once across every track set to "
-                          + juce::String (prof.name) + ". Play it through, then click here again.");
+        verdict.show (0, tr ("Play your song first!"),
+                      trf ("Lotus counts the most voices sounding at once across every track set to {console}. Play it through, then click here again.",
+                           { { "console", tr (prof.name) } }));
         return;
     }
 
     const int n = (peak + prof.voiceLimit - 1) / prof.voiceLimit;
-    verdict.show (n, "This song takes " + juce::String (n) + " " + consoleNoun (console, n != 1) + " to run. " + verdictQuip (n),
-                  "Peak: " + across + " The " + consoleNoun (console, false) + " has " + juce::String (prof.voiceLimit) + ".");
+    verdict.show (n, takes (n),
+                  across + gap() + trf ("The {console} has {limit}.", { { "console", consoleNoun (console, false) }, { "limit", voicesText (prof.voiceLimit) } }));
 }
 
 void LotusEditor::refreshConsole()
@@ -538,19 +726,18 @@ void LotusEditor::refreshConsole()
     seenEncoding = processor.isEncoding();
     const auto& prof = lotus::getConsoleProfile ((lotus::ConsoleId) seenConsole);
 
-    consoleBox.setTooltip (prof.description);
+    consoleBox.setTooltip (tr (prof.description));
 
     const bool hasCodec = prof.codec != lotus::Codec::None;
     formatChip.setEnabled (hasCodec);
     formatChip.setText (! hasCodec ? juce::String (prof.sampleBits == 8 ? "8-bit PCM" : "16-bit PCM")
-                                   : seenEncoding ? juce::String ("Converting...")
-                                                  : juce::String (lotus::codecName (prof.codec)) + " samples");
+                                   : seenEncoding ? tr ("Converting...")
+                                                  : trf ("{codec} samples", { { "codec", lotus::codecName (prof.codec) } }));
 
     voicesChip.setEnabled (prof.voiceLimit > 0);
-    voicesChip.setText (prof.voiceLimit > 0 ? juce::String (prof.voiceLimit) + (prof.voiceLimit == 1 ? " voice" : " voices")
-                                            : juce::String ("Any voices"));
+    voicesChip.setText (prof.voiceLimit > 0 ? voicesText (prof.voiceLimit) : tr ("Any voices"));
 
-    if (page == 1) updateEnablement();
+    if (page == effectsPage) updateEnablement();
 }
 
 void LotusEditor::refreshPresetList()
@@ -563,8 +750,8 @@ void LotusEditor::refreshPresetList()
     {
         const auto missing = processor.getSoundFontFile();
         presetBox.setTextWhenNothingSelected (missing != juce::File()
-            ? "Missing: " + missing.getFileName() + "  -  click Load SF2 to find it"
-            : "Drop a .sf2 here, or click Load SF2");
+            ? trf ("Missing: {file}  -  click Load SF2 to find it", { { "file", missing.getFileName() } })
+            : tr ("Drop a .sf2 here, or click Load SF2"));
         presetBox.setEnabled (false);
         prevButton.setEnabled (false);
         nextButton.setEnabled (false);
@@ -579,7 +766,7 @@ void LotusEditor::refreshPresetList()
         const auto& pr = sf->presets[i];
         if (multipleBanks && pr.bank != lastBank)
         {
-            presetBox.addSectionHeading (pr.bank == 128 ? juce::String ("Bank 128 (Drums)") : "Bank " + juce::String (pr.bank));
+            presetBox.addSectionHeading (pr.bank == 128 ? tr ("Bank 128 (Drums)") : trf ("Bank {n}", { { "n", juce::String (pr.bank) } }));
             lastBank = pr.bank;
         }
         presetBox.addItem (juce::String (pr.bank).paddedLeft ('0', 3) + ":" + juce::String (pr.program).paddedLeft ('0', 3)
@@ -601,15 +788,14 @@ void LotusEditor::refreshInfo()
     const auto* sf = processor.getSoundFont();
     if (sf == nullptr)
     {
-        infoLabel.setText ("No SoundFont loaded", juce::dontSendNotification);
+        infoLabel.setText (tr ("No SoundFont loaded"), juce::dontSendNotification);
         return;
     }
 
     juce::String name = juce::String (sf->name).trim();
     if (name.isEmpty()) name = processor.getSoundFontFile().getFileNameWithoutExtension();
     const int voices = juce::jmax (0, seenVoices);
-    infoLabel.setText (name + "\n" + juce::String (sf->presets.size()) + " presets  |  "
-                           + juce::String (voices) + (voices == 1 ? " voice" : " voices"),
+    infoLabel.setText (name + "\n" + trf ("{n} presets", { { "n", juce::String (sf->presets.size()) } }) + "  |  " + voicesText (voices),
                        juce::dontSendNotification);
     infoLabel.setColour (juce::Label::textColourId, voices > 0 ? Palette::leaf : Palette::textDim);
 }
@@ -630,19 +816,24 @@ void LotusEditor::updateEnablement()
 
     const auto& info = effectInfo[selectedEffect];
     const auto console = processor.getConsole();
-    const juce::String consoleName = lotus::getConsoleProfile (console).name;
+    const juce::String consoleName = tr (lotus::getConsoleProfile (console).name);
     juce::String hint;
     if (selectedEffect == led)
         hint = (console == lotus::ConsoleId::Amiga500 || console == lotus::ConsoleId::Amiga1200)
-                 ? "On top of the " + consoleName + "'s own output filtering."
-                 : "Works on any console; it's applied to the final output.";
+                 ? trf ("On top of the {console}'s own output filtering.", { { "console", consoleName } })
+                 : tr ("Works on any console; it's applied to the final output.");
     else if (console == info.home)
-        hint = "Console is " + consoleName + ": running at the hardware's own rate.";
+        hint = trf ("Console is {console}: running at the hardware's own rate.", { { "console", consoleName } });
     else
-        hint = "Console is " + consoleName + ". Times are kept; set Console to "
-             + lotus::getConsoleProfile (info.home).name + " for the authentic sound.";
+        hint = trf ("Console is {console}. Times are kept; set Console to {home} for the authentic sound.",
+                    { { "console", consoleName }, { "home", tr (lotus::getConsoleProfile (info.home).name) } });
     fxHint.setText (hint, juce::dontSendNotification);
+
+    clearFixesButton.setVisible (page == pitchPage && processor.getStoredCorrectionCount() > 0);
 }
+
+// ---------------------------------------------------------------------------------
+// Loading and saving
 
 void LotusEditor::stepPreset (int delta)
 {
@@ -661,7 +852,7 @@ void LotusEditor::openFileChooser()
     if (start == juce::File() || ! start.getParentDirectory().isDirectory())
         start = juce::File::getSpecialLocation (juce::File::userHomeDirectory);
 
-    chooser = std::make_unique<juce::FileChooser> ("Load a SoundFont", start, "*.sf2");
+    chooser = std::make_unique<juce::FileChooser> (tr ("Load a SoundFont"), start, "*.sf2");
     chooser->launchAsync (juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles,
                           [this] (const juce::FileChooser& fc)
                           {
@@ -670,11 +861,26 @@ void LotusEditor::openFileChooser()
                           });
 }
 
+void LotusEditor::saveAsChooser()
+{
+    chooser = std::make_unique<juce::FileChooser> (tr ("Save fixed SoundFont as"), processor.getFixedSaveTarget(), "*.sf2");
+    chooser->launchAsync (juce::FileBrowserComponent::saveMode | juce::FileBrowserComponent::canSelectFiles
+                              | juce::FileBrowserComponent::warnAboutOverwriting,
+                          [this] (const juce::FileChooser& fc)
+                          {
+                              auto f = fc.getResult();
+                              if (f == juce::File()) return;
+                              if (! f.hasFileExtension ("sf2")) f = f.withFileExtension ("sf2");
+                              processor.saveTuningFixes (LotusProcessor::SaveChoice::SaveAs, f);
+                          });
+}
+
 void LotusEditor::loadFile (const juce::File& f)
 {
-    const auto err = processor.loadSoundFont (f);
+    const auto err = processor.loadSoundFont (f, true);
     if (err.isNotEmpty())
-        juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::WarningIcon, "Couldn't load " + f.getFileName(), err);
+        juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::WarningIcon,
+                                                trf ("Couldn't load {file}", { { "file", f.getFileName() } }), tr (err));
     refreshPresetList();
 }
 

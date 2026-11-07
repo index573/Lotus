@@ -188,9 +188,10 @@ std::unique_ptr<SoundFont> SoundFont::loadFromMemory (const void* data, size_t s
     if (inam.found) sf->name = r.str (inam.offset, inam.size);
 
     const size_t numSamples = smpl.size / 2;
-    sf->samples.resize (numSamples);
+    auto pool = std::make_shared<std::vector<int16_t>> (numSamples);
     for (size_t i = 0; i < numSamples; ++i)
-        sf->samples[i] = r.s16 (smpl.offset + i * 2);
+        (*pool)[i] = r.s16 (smpl.offset + i * 2);
+    sf->pool = pool;
 
     std::vector<PhdrRec> phdrs;
     for (size_t i = 0; i + 38 <= phdr.size; i += 38)
@@ -351,7 +352,7 @@ std::unique_ptr<SoundFont> SoundFont::loadFromMemory (const void* data, size_t s
                 rg.loKey = (uint8_t) keyLo; rg.hiKey = (uint8_t) keyHi;
                 rg.loVel = (uint8_t) velLo; rg.hiVel = (uint8_t) velHi;
 
-                const int64_t poolEnd = (int64_t) sf->samples.size();
+                const int64_t poolEnd = (int64_t) sf->pool->size();
                 auto addr = [&] (uint32_t base, Gen fine, Gen coarse)
                 {
                     const int64_t a = (int64_t) base + v (fine) + 32768LL * v (coarse);

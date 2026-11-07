@@ -15,6 +15,10 @@ Formats: **CLAP**, **VST3** and **Standalone** on Windows, macOS and Linux, plus
 - **Hardware voice limits.** Optionally cap polyphony at the console's voice count, so the SNES gets 8, the Amiga 4 and the NES DMC 1. Extra notes steal the oldest.
 - **Song-wide voice light.** Every Lotus in your project set to the same console adds up its voices, and a light in the Console card turns red when the song needs more than the hardware has. Click it to find out how many consoles your song would take.
 - **Console effects.** SNES echo, N64 reverb, PS1 reverb and the Amiga LED filter, on their own tab.
+- **Vibrato.** A per-note pitch LFO with amount, speed, delay and fade-in, like the pitch LFO in FL Studio's channel settings.
+- **Tuning.** Master tuning you can type in cents or as an A4 frequency (432 Hz, 415 Hz and so on).
+- **Tuning repair.** Drag in a SoundFont with wrong root notes and Lotus offers to fix it. It measures every preset, lets you hear each fix before you keep it, and saves a `_FIXED.sf2` copy or keeps the fixes in your project.
+- **English and Japanese.** Switch with the globe button.
 - **Glide**, pitch-bend range, MIDI program changes, drag and drop, a scalable window.
 
 ## Consoles
@@ -69,6 +73,47 @@ The FIR adds 7 samples of delay, and extreme settings can overflow and distort t
 
 The effects run at the console's mixer rate. With the matching console selected they behave like the hardware; with any other console, delay times stay right but the filters shift with the sample rate. The Effects tab tells you when that's the case.
 
+## Pitch tab
+
+![Pitch](docs/pitch.png)
+
+**Vibrato** starts after the delay, fades in over the attack, then swings the pitch by the amount (in cents; 100 cents is a semitone) at the speed you set. Each note starts its own vibrato, so a held note gets the classic delayed wobble while quick notes stay clean. The shape can be sine, triangle or square. Square gives a trill-like jump between two pitches. On console modes the vibrato goes through the console's own pitch precision, so a SNES vibrato steps the way the S-DSP's pitch register would.
+
+**Tuning** shifts everything by up to a semitone either way. Switch between cents and Hz, then click the value to type either one: `-31.8`, `432 Hz` and `A4 = 415` all work. Double-click the knob to go back to A4 = 440 Hz.
+
+## Tuning repair
+
+![Tuning results](docs/tuning.png)
+
+SoundFonts ripped from games often have the wrong root note on some samples, so a preset plays a fifth or an octave away from the key you press. When you load a SoundFont by dragging it in or with **Load SF2**, Lotus does a quick check in the background. If it finds the patterns of a broken bank, it asks: *"Strange tuning and incorrect root notes detected. Attempt to adjust to C5/A=440Hz?"* You can also run the check yourself from the Pitch tab with **Check tuning...**.
+
+Saying yes runs a full analysis with a progress bar. For every preset, Lotus takes the sample that plays at C5 (middle C, MIDI 60, in FL Studio's note naming) and measures its pitch with the YIN algorithm, then compares what the preset plays against A4 = 440 Hz. The results list shows:
+
+- **To adjust:** each preset with what's wrong ("Root note 7 semitones too high", "18 cents flat"), the change in cents, a Fix/Keep switch, and **Before**/**After** buttons that play C5 both ways.
+- **Left alone:** everything it didn't touch and why. That covers drum kits, sound effects, sounds with no clear pitch, pitch that drifts too much to measure, and presets that are already in tune.
+
+Then **Save fixed version?** gives four choices:
+
+- **Yes, save:** writes `name_FIXED.sf2` next to the original and switches to it.
+- **Yes, save as...:** lets you pick where.
+- **No:** keeps the fixes in your project only. The .sf2 file isn't touched, and the fixes come back every time the project loads. The Pitch tab shows how many are active, with a button to clear them.
+- **Cancel:** throws the fixes away.
+
+How it decides, and its limits:
+
+- Fixes are written as preset-level tuning, so instruments shared with other presets (often drum kits) don't change. The rest of the file, samples included, is copied byte for byte.
+- A preset that's off by exactly an octave is listed but not selected, because organ footages, harmonics and some pads really do sound an octave away. Listen and switch it to Fix if it's wrong. The exception is when most of the bank is off by the same octave, which is usually a C4/C5 naming mix-up; then those are selected.
+- Patches within 25 cents count as in tune, because ensemble patches (accordion, choir) are often detuned on purpose.
+- If a preset layers a voice a fifth or an octave above, Lotus measures the layer with the least transposition.
+- The automatic prompt only appears for broken-looking banks: many wrong roots, the whole bank shifted by one octave, or the whole bank detuned. A healthy General MIDI bank with a couple of odd presets doesn't trigger it; you can still check it by hand. On FluidR3_GM and TimGM6mb, two well-tuned GM banks, it stays quiet. FluidR3's "Sine Wave" preset really does play a tritone off, and the manual check catches it.
+- Pitch detection can be fooled by bells and other inharmonic sounds. That's why every fix can be auditioned before you keep it.
+
+## Japanese
+
+![Japanese](docs/japanese.png)
+
+Click the globe button and pick 日本語. Every label, tooltip and dialog switches at once, and the choice is saved for all Lotus instances. With nothing saved, Lotus follows your system language. Console names use their Japanese release names (スーパーファミコン, メガドライブ and so on). Note names stay in FL Studio's numbering, where middle C is C5.
+
 ## The voice light
 
 The light at the top right of the Console card shows how many voices are playing right now across every Lotus in the project set to the same console, against that console's limit (for example `9 / 8` on SNES). It turns amber at the limit and red over it, and stays red for two seconds so a brief overload doesn't slip past.
@@ -88,6 +133,7 @@ Instances find each other through shared memory, so this works when your DAW loa
 - **Load SF2**, or drag a `.sf2` onto the window. Lotus remembers the file's location in your project.
 - Pick a preset from the menu or with the arrows. MIDI program changes and bank select (CC0/CC32) work too. In VST3 hosts they arrive through the host's program list, which shows "Program 1-128" rather than preset names because VST3 fixes that list at load.
 - Double-click a knob to reset it, or click its value to type one (`250 ms`, `1.5 s`).
+- The Sound tab holds the instrument, the Pitch tab holds vibrato, tuning and tuning repair, and the Effects tab holds the console effects.
 - Hover over a control to see what it does. Hovering the console menu shows what that console mode emulates.
 - MIDI: notes, velocity, pitch bend, sustain (CC64), volume (CC7), pan (CC10), expression (CC11), all-notes-off and all-sound-off. Lotus listens on every channel; use one instance per instrument.
 
@@ -134,10 +180,11 @@ It doesn't yet support modulators beyond the default velocity curve, the SF2 fil
 ## Source layout
 
 ```
-Source/dsp/   engine: SF2 parser, envelope, voices, consoles, codecs, effects
-Source/ui/    look and feel and widgets
+Source/dsp/   engine: SF2 parser, envelope, voices, consoles, codecs, effects, tuning analysis
+Source/ui/    look and feel, widgets, tuning dialog, translations (StringsJa.inc)
 Source/       plugin processor and editor
 tests/        engine tests (they build an SF2 in memory, so there are no fixtures)
+tools/        check_translations.py: fails if a UI string has no Japanese entry
 ```
 
 Sources and licences for the hardware tables and algorithms are in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

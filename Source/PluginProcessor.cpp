@@ -20,6 +20,26 @@ float parseTime (const juce::String& text)
 }
 
 juce::String percent (float v) { return juce::String (juce::roundToInt (v)) + "%"; }
+} // namespace
+
+juce::String formatTuning (float cents, bool asHz)
+{
+    const double hz = 440.0 * std::pow (2.0, cents / 1200.0);
+    if (asHz) return "A4 = " + juce::String (hz, 1) + " Hz";
+    return (cents > 0.0f ? "+" : "") + juce::String (cents, 1) + " c";
+}
+
+float parseTuning (const juce::String& text, bool bareMeansHz)
+{
+    const auto t = text.trim().toLowerCase().replace ("a4", "").replace ("=", "").trim();
+    const double v = t.getDoubleValue();
+    const bool hz = t.endsWith ("hz") || (! t.endsWith ("c") && ! t.endsWith ("cents") && (bareMeansHz || v > 200.0));
+    const double cents = hz ? (v > 0.0 ? 1200.0 * std::log2 (v / 440.0) : 0.0) : v;
+    return (float) juce::jlimit (-100.0, 100.0, cents);
+}
+
+namespace
+{
 
 std::unique_ptr<juce::AudioParameterFloat> timeParam (const char* id, const char* name, float maxSeconds, float def)
 {
@@ -82,6 +102,33 @@ juce::AudioProcessorValueTreeState::ParameterLayout LotusProcessor::createLayout
         juce::AudioParameterIntAttributes().withStringFromValueFunction ([] (int v, int) { return juce::String (v) + " st"; })));
     layout.add (timeParam (glide, "Glide", 2.0f, 0.0f));
 
+    layout.add (std::make_unique<juce::AudioParameterFloat> (
+        juce::ParameterID { tune, 1 }, "Tuning", juce::NormalisableRange<float> (-100.0f, 100.0f, 0.1f), 0.0f,
+        juce::AudioParameterFloatAttributes()
+            .withStringFromValueFunction ([] (float c, int) { return formatTuning (c, false); })
+            .withValueFromStringFunction ([] (const juce::String& t) { return parseTuning (t, false); })));
+
+    {
+        juce::NormalisableRange<float> amount (0.0f, 200.0f, 0.1f);
+        amount.setSkewForCentre (40.0f);
+        layout.add (std::make_unique<juce::AudioParameterFloat> (
+            juce::ParameterID { vibAmount, 1 }, "Vibrato Amount", amount, 0.0f,
+            juce::AudioParameterFloatAttributes()
+                .withStringFromValueFunction ([] (float v, int) { return juce::String (v, v < 10.0f ? 1 : 0) + " c"; })
+                .withValueFromStringFunction ([] (const juce::String& t) { return t.getFloatValue(); })));
+        juce::NormalisableRange<float> speed (0.1f, 20.0f, 0.01f);
+        speed.setSkewForCentre (5.0f);
+        layout.add (std::make_unique<juce::AudioParameterFloat> (
+            juce::ParameterID { vibSpeed, 1 }, "Vibrato Speed", speed, 5.5f,
+            juce::AudioParameterFloatAttributes()
+                .withStringFromValueFunction ([] (float v, int) { return juce::String (v, 2) + " Hz"; })
+                .withValueFromStringFunction ([] (const juce::String& t) { return t.getFloatValue(); })));
+        layout.add (timeParam (vibDelay, "Vibrato Delay", 4.0f, 0.0f));
+        layout.add (timeParam (vibAttack, "Vibrato Attack", 4.0f, 0.0f));
+        layout.add (std::make_unique<juce::AudioParameterChoice> (juce::ParameterID { vibShape, 1 }, "Vibrato Shape",
+                                                                  juce::StringArray { "Sine", "Triangle", "Square" }, 0));
+    }
+
     layout.add (boolParam (snesOn, "SNES Echo"));
     layout.add (std::make_unique<juce::AudioParameterInt> (
         juce::ParameterID { snesDelay, 1 }, "SNES Echo Delay", 0, 15, 5,
@@ -113,7 +160,8 @@ LotusProcessor::LotusProcessor()
 {
     using namespace ParamIDs;
     for (const char* id : { attack, decay, sustain, release, noteOff, envSource, console, nativeFormat, voiceLimit,
-                            volume, bendRange, glide, snesOn, snesDelay, snesFeedback, snesVolume, snesFilter,
+                            volume, bendRange, glide, tune, vibAmount, vibSpeed, vibDelay, vibAttack, vibShape,
+                            snesOn, snesDelay, snesFeedback, snesVolume, snesFilter,
                             n64On, n64Preset, n64Mix, ps1On, ps1Preset, ps1Depth, ledOn })
     {
         raw[id] = params.getRawParameterValue (id);
@@ -122,13 +170,14 @@ LotusProcessor::LotusProcessor()
 
     registrySlot = lotus::VoiceRegistry::get().join();
 
-    startTimerHz (5);
+    startTimerHz (10);
 }
 
 LotusProcessor::~LotusProcessor()
 {
     stopTimer();
     stopEncoding();
+    stopTuningWorker();
     lotus::VoiceRegistry::get().leave (registrySlot);
 }
 
@@ -159,7 +208,10 @@ void LotusProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
 {
     const juce::SpinLock::ScopedLockType lock (engineLock);
     synth.prepare (sampleRate, samplesPerBlock);
+    previewSynth.prepare (sampleRate, samplesPerBlock);
     scratchR.assign ((size_t) juce::jmax (1, samplesPerBlock), 0.0f);
+    previewL.assign ((size_t) juce::jmax (1, samplesPerBlock), 0.0f);
+    previewR.assign ((size_t) juce::jmax (1, samplesPerBlock), 0.0f);
 }
 
 void LotusProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBuffer& midi)
@@ -189,6 +241,12 @@ void LotusProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiB
     p.masterGain = db <= -60.0f ? 0.0f : juce::Decibels::decibelsToGain (db);
     p.bendRange = (int) value (bendRange);
     p.glide = value (glide);
+    p.tuneCents = value (tune);
+    p.vibAmount = value (vibAmount);
+    p.vibSpeed = value (vibSpeed);
+    p.vibDelay = value (vibDelay);
+    p.vibAttack = value (vibAttack);
+    p.vibShape = (int) value (vibShape);
 
     p.fx.snesEcho     = value (snesOn) > 0.5f;
     p.fx.snesDelay    = (int) value (snesDelay);
@@ -229,6 +287,14 @@ void LotusProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiB
     songVoices.store (lotus::VoiceRegistry::get().publish (registrySlot, p.console, synth.getActiveVoiceCount()),
                       std::memory_order_relaxed);
 
+    // Tuning-check audition, mixed on top.
+    if (previewSynth.getSoundFont() != nullptr && (int) previewL.size() >= numSamples)
+    {
+        previewSynth.setParams (p);
+        previewSynth.render (previewL.data(), previewR.data(), numSamples);
+        for (int i = 0; i < numSamples; ++i) { left[i] += previewL[(size_t) i]; right[i] += previewR[(size_t) i]; }
+    }
+
     if (! stereo)
     {
         buffer.applyGain (0, 0, numSamples, 0.5f);
@@ -243,11 +309,50 @@ void LotusProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiB
 
 void LotusProcessor::timerCallback()
 {
+    const double now = juce::Time::getMillisecondCounterHiRes();
+
+    if (previewPlaying && now >= previewOffAtMs)
+    {
+        const juce::SpinLock::ScopedLockType lock (engineLock);
+        previewSynth.allNotesOff();
+        previewPlaying = false;
+    }
+
+    // Keep the progress view up for a moment even when analysis is instant.
+    if (tuningDoneFlag.load() && (tuningPhase != TuningPhase::Analyzing || now - tuningStartedMs > 700.0))
+    {
+        tuningDoneFlag = false;
+        if (tuningWorker.joinable()) tuningWorker.join();
+        auto results = std::move (tuningResult);
+        tuningResult.clear();
+
+        if (results.empty())
+            tuningPhase = TuningPhase::Idle;   // cancelled
+        else if (tuningPhase == TuningPhase::Scanning)
+            tuningPhase = lotus::looksMistuned (results) ? TuningPhase::Ask : TuningPhase::Idle;
+        else if (tuningPhase == TuningPhase::Analyzing)
+        {
+            tuningRows.clear();
+            lotus::TuningCorrections all;
+            for (const auto& t : results)
+                if (t.status == lotus::TuneStatus::Adjust)
+                {
+                    tuningRows.push_back ({ t, t.recommended });
+                    all[{ t.bank, t.program }] = t.correctionCents;
+                }
+            for (const auto& t : results)
+                if (t.status != lotus::TuneStatus::Adjust)
+                    tuningRows.push_back ({ t, false });
+            previewFixed = lotus::withCorrections (*tuningSource, all);
+            tuningPhase = TuningPhase::Review;
+        }
+    }
+
     if (encodeDone.exchange (false))
     {
         if (encoder.joinable()) encoder.join();
         std::unique_ptr<std::vector<int16_t>> old;
-        if (encodedResult != nullptr && encodedFrom == soundFont.get())
+        if (encodedResult != nullptr && soundFont != nullptr && encodedFrom == &soundFont->samples())
         {
             const juce::SpinLock::ScopedLockType lock (engineLock);
             old = std::move (installedPool);
@@ -273,12 +378,12 @@ void LotusProcessor::startEncoding (lotus::Codec codec)
     encoding = true;
     cancelEncode = false;
     encodingCodec = codec;
-    encodedFrom = soundFont.get();
+    encodedFrom = &soundFont->samples();
 
     auto source = soundFont;   // keeps the samples alive while the thread runs
     encoder = std::thread ([this, source, codec]
     {
-        auto result = std::make_unique<std::vector<int16_t>> (lotus::applyCodec (source->samples, codec, &cancelEncode));
+        auto result = std::make_unique<std::vector<int16_t>> (lotus::applyCodec (source->samples(), codec, &cancelEncode));
         if (! cancelEncode.load() && ! result->empty())
             encodedResult = std::move (result);
         encodeDone = true;
@@ -294,7 +399,7 @@ void LotusProcessor::stopEncoding()
     encoding = false;
 }
 
-juce::String LotusProcessor::loadSoundFont (const juce::File& file)
+juce::String LotusProcessor::loadSoundFont (const juce::File& file, bool userInitiated)
 {
     std::string error;
     std::shared_ptr<const lotus::SoundFont> loaded = lotus::SoundFont::loadFromFile (file.getFullPathName().toStdString(), error);
@@ -302,26 +407,226 @@ juce::String LotusProcessor::loadSoundFont (const juce::File& file)
         return error.empty() ? juce::String ("Could not load SoundFont.") : juce::String (error);
 
     stopEncoding();
+    stopTuningWorker();
+    stopPreview();
+    tuningPhase = TuningPhase::Idle;
+    tuningRows.clear();
 
     std::shared_ptr<const lotus::SoundFont> old;
     std::unique_ptr<std::vector<int16_t>> oldPool;
     {
         const juce::SpinLock::ScopedLockType lock (engineLock);
         old = std::move (soundFont);
-        soundFont = std::move (loaded);
+        soundFont = loaded;
         synth.setSoundFont (soundFont.get());
         synth.setCodedPool (nullptr, lotus::Codec::None);
         oldPool = std::move (installedPool);
         installedCodec = lotus::Codec::None;
         soundFontFile = file;
     }
+    loadedSoundFont = loaded;
+    storedCorrections.clear();
     // Freed here, outside the lock and off the audio thread.
     old.reset();
     oldPool.reset();
 
     ++soundFontGeneration;
     updateHostDisplay (ChangeDetails().withProgramChanged (true));
+
+    if (userInitiated)
+        startTuningCheck (true);
     return {};
+}
+
+void LotusProcessor::installSoundFont (std::shared_ptr<const lotus::SoundFont> active)
+{
+    std::shared_ptr<const lotus::SoundFont> old;
+    {
+        const juce::SpinLock::ScopedLockType lock (engineLock);
+        const int preset = synth.getPresetIndex();
+        old = std::move (soundFont);
+        soundFont = std::move (active);
+        synth.setSoundFont (soundFont.get());
+        synth.setPresetIndex (preset);
+        if (old == nullptr || old->pool != soundFont->pool)
+        {
+            synth.setCodedPool (nullptr, lotus::Codec::None);
+            installedCodec = lotus::Codec::None;
+        }
+    }
+    old.reset();
+    ++soundFontGeneration;
+}
+
+void LotusProcessor::applyStoredCorrections()
+{
+    if (loadedSoundFont == nullptr) return;
+    installSoundFont (storedCorrections.empty() ? loadedSoundFont : lotus::withCorrections (*loadedSoundFont, storedCorrections));
+}
+
+void LotusProcessor::clearStoredCorrections()
+{
+    storedCorrections.clear();
+    applyStoredCorrections();
+}
+
+void LotusProcessor::startTuningWorker (bool thorough)
+{
+    stopTuningWorker();
+    tuningCancel = false;
+    tuningDoneFlag = false;
+    tuningProgressDone = 0;
+    tuningProgressTotal = soundFont != nullptr ? (int) soundFont->presets.size() : 0;
+    tuningStartedMs = juce::Time::getMillisecondCounterHiRes();
+    tuningSource = soundFont;
+
+    auto source = tuningSource;
+    tuningWorker = std::thread ([this, source, thorough]
+    {
+        lotus::TuningOptions options;
+        options.thorough = thorough;
+        auto result = lotus::analyzeTuning (*source, options, [this] (int done, int total)
+        {
+            tuningProgressDone = done;
+            tuningProgressTotal = total;
+            return ! tuningCancel.load();
+        });
+        tuningResult = std::move (result);
+        tuningDoneFlag = true;
+    });
+}
+
+void LotusProcessor::stopTuningWorker()
+{
+    tuningCancel = true;
+    if (tuningWorker.joinable()) tuningWorker.join();
+    tuningDoneFlag = false;
+    tuningResult.clear();
+}
+
+void LotusProcessor::stopPreview()
+{
+    const juce::SpinLock::ScopedLockType lock (engineLock);
+    previewSynth.setSoundFont (nullptr);
+    previewPlaying = false;
+}
+
+void LotusProcessor::startTuningCheck (bool automatic)
+{
+    if (soundFont == nullptr) return;
+    tuningOutcome = TuningOutcome::None;
+    tuningDetail = {};
+    tuningPhase = automatic ? TuningPhase::Scanning : TuningPhase::Analyzing;
+    startTuningWorker (! automatic);
+}
+
+void LotusProcessor::answerTuningPrompt (bool fix)
+{
+    if (tuningPhase != TuningPhase::Ask) return;
+    if (! fix) { tuningPhase = TuningPhase::Idle; return; }
+    tuningPhase = TuningPhase::Analyzing;
+    startTuningWorker (true);
+}
+
+void LotusProcessor::cancelTuningCheck()
+{
+    stopTuningWorker();
+    stopPreview();
+    previewFixed.reset();
+    tuningRows.clear();
+    tuningPhase = TuningPhase::Idle;
+}
+
+void LotusProcessor::setTuningRowApply (int row, bool apply)
+{
+    if (juce::isPositiveAndBelow (row, (int) tuningRows.size()) && tuningRows[(size_t) row].info.status == lotus::TuneStatus::Adjust)
+        tuningRows[(size_t) row].apply = apply;
+}
+
+void LotusProcessor::previewTuningRow (int row, bool fixed)
+{
+    if (! juce::isPositiveAndBelow (row, (int) tuningRows.size()) || tuningSource == nullptr) return;
+    const auto& info = tuningRows[(size_t) row].info;
+    const auto* sf = fixed && previewFixed != nullptr ? previewFixed.get() : tuningSource.get();
+    {
+        const juce::SpinLock::ScopedLockType lock (engineLock);
+        previewSynth.setSoundFont (sf);
+        previewSynth.setPresetIndex (info.presetIndex);
+        previewSynth.noteOn (info.playKey, 100);
+    }
+    previewPlaying = true;
+    previewOffAtMs = juce::Time::getMillisecondCounterHiRes() + 1400.0;
+}
+
+void LotusProcessor::finishTuningReview()
+{
+    stopPreview();
+    const bool any = std::any_of (tuningRows.begin(), tuningRows.end(), [] (const TuningRow& r) { return r.apply; });
+    if (any) { tuningPhase = TuningPhase::AskSave; tuningOutcome = TuningOutcome::None; return; }
+    tuningOutcome = TuningOutcome::NothingChanged;
+    tuningPhase = TuningPhase::Done;
+}
+
+juce::File LotusProcessor::getFixedSaveTarget() const
+{
+    auto f = soundFontFile.getSiblingFile (soundFontFile.getFileNameWithoutExtension() + "_FIXED.sf2");
+    return f.exists() ? f.getNonexistentSibling (true) : f;
+}
+
+void LotusProcessor::saveTuningFixes (SaveChoice choice, const juce::File& saveAsFile)
+{
+    if (choice == SaveChoice::Cancel) { cancelTuningCheck(); return; }
+
+    // New fixes were measured on top of any already kept in the project, so they add.
+    auto combined = storedCorrections;
+    for (const auto& r : tuningRows)
+        if (r.apply) combined[{ r.info.bank, r.info.program }] += r.info.correctionCents;
+    for (auto it = combined.begin(); it != combined.end();)
+        it = it->second == 0 ? combined.erase (it) : std::next (it);
+
+    stopPreview();
+
+    if (choice == SaveChoice::KeepInProject)
+    {
+        storedCorrections = combined;
+        applyStoredCorrections();
+        previewFixed.reset();
+        tuningOutcome = TuningOutcome::Kept;
+        tuningPhase = TuningPhase::Done;
+        return;
+    }
+
+    const auto target = choice == SaveChoice::Save ? getFixedSaveTarget() : saveAsFile;
+    if (target == juce::File()) return;
+
+    std::string error;
+    if (! lotus::writeCorrectedSoundFont (soundFontFile.getFullPathName().toStdString(), target.getFullPathName().toStdString(), combined, error))
+    {
+        tuningOutcome = TuningOutcome::SaveFailed;
+        tuningDetail = error;
+        tuningPhase = TuningPhase::AskSave;
+        return;
+    }
+
+    const int preset = synth.getPresetIndex();
+    const auto err = loadSoundFont (target, false);
+    if (err.isNotEmpty())
+    {
+        tuningOutcome = TuningOutcome::SaveFailed;
+        tuningDetail = err;
+        tuningPhase = TuningPhase::AskSave;
+        return;
+    }
+    selectPreset (preset);
+    previewFixed.reset();
+    tuningOutcome = TuningOutcome::Saved;
+    tuningDetail = target.getFileName();
+    tuningPhase = TuningPhase::Done;
+}
+
+void LotusProcessor::dismissTuningMessage()
+{
+    if (tuningPhase == TuningPhase::Done) tuningPhase = TuningPhase::Idle;
 }
 
 void LotusProcessor::selectPreset (int index)
@@ -388,6 +693,18 @@ void LotusProcessor::getStateInformation (juce::MemoryBlock& destData)
         state.setProperty ("presetProgram", pr.program, nullptr);
     }
 
+    auto fixes = juce::ValueTree ("TuningFixes");
+    for (const auto& [key, cents] : storedCorrections)
+    {
+        juce::ValueTree fix ("Fix");
+        fix.setProperty ("bank", key.first, nullptr);
+        fix.setProperty ("program", key.second, nullptr);
+        fix.setProperty ("cents", cents, nullptr);
+        fixes.appendChild (fix, nullptr);
+    }
+    state.removeChild (state.getChildWithName ("TuningFixes"), nullptr);
+    state.appendChild (fixes, nullptr);
+
     if (auto xml = state.createXml())
         copyXmlToBinary (*xml, destData);
 }
@@ -416,6 +733,15 @@ void LotusProcessor::setStateInformation (const void* data, int sizeInBytes)
 
     if (soundFont)
     {
+        lotus::TuningCorrections fixes;
+        for (const auto& fix : state.getChildWithName ("TuningFixes"))
+            fixes[{ (int) fix.getProperty ("bank"), (int) fix.getProperty ("program") }] = (int) fix.getProperty ("cents");
+        if (fixes != storedCorrections)
+        {
+            storedCorrections = fixes;
+            applyStoredCorrections();
+        }
+
         // Bank/program first, in case the file's presets were reordered since saving.
         int index = soundFont->findPreset ((int) state.getProperty ("presetBank", -1), (int) state.getProperty ("presetProgram", -1));
         if (index < 0) index = (int) state.getProperty ("presetIndex", 0);

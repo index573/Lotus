@@ -32,6 +32,10 @@ jobs:
           sudo apt-get install -y libasound2-dev libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev \
             libxext-dev libxcomposite-dev libfreetype-dev libfontconfig1-dev xvfb
 
+      - name: Check translations
+        if: runner.os == 'Linux'
+        run: python3 tools/check_translations.py
+
       - name: Configure
         run: cmake -B build -DCMAKE_BUILD_TYPE=Release "-DCMAKE_OSX_ARCHITECTURES=arm64;x86_64"
 

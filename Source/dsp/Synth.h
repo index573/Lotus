@@ -31,6 +31,14 @@ struct EngineParams
     float masterGain    = 1.0f;
     int   bendRange     = 2;       // semitones
     float glide         = 0.0f;    // seconds
+    float tuneCents     = 0.0f;    // master tuning relative to A4 = 440 Hz
+
+    // Vibrato: a per-note pitch LFO that starts after `vibDelay` and fades in over `vibAttack`.
+    float vibAmount = 0.0f;        // cents (peak deviation)
+    float vibSpeed  = 5.5f;        // Hz
+    float vibDelay  = 0.0f;        // seconds
+    float vibAttack = 0.0f;        // seconds
+    int   vibShape  = 0;           // 0 sine, 1 triangle, 2 square
 
     EffectParams fx;
 };
@@ -83,6 +91,8 @@ private:
         float pan = 0.0f;
         float glideCents = 0.0f;
         float glideRate = 0.0f;   // cents per engine sample
+        double vibTime = 0.0;     // seconds since note-on
+        float vibCents = 0.0f;
         Envelope env;
     };
 
@@ -90,6 +100,7 @@ private:
     void releaseVoice (Voice& v);
     Voice& allocateVoice();
     void updatePitch (Voice& v) const;
+    float vibratoCents (double secondsSinceNoteOn) const;
     void renderEngine (float* outL, float* outR, int n);
     void applyEffectsAndOutputStage (float* outL, float* outR, int n);
     void configureConsole();

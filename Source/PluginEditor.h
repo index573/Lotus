@@ -2,6 +2,7 @@
 
 #include "PluginProcessor.h"
 #include "ui/LotusLookAndFeel.h"
+#include "ui/TuningDialog.h"
 #include "ui/Widgets.h"
 
 class LotusEditor final : public juce::AudioProcessorEditor,
@@ -35,21 +36,28 @@ private:
         LotusEditor& editor;
     };
 
+    enum Page { soundPage = 0, pitchPage, effectsPage, numPages };
     enum Effect { snes = 0, n64, ps1, led, numEffects };
 
     void timerCallback() override;
+    void applyLanguage();
     void refreshPresetList();
     void refreshInfo();
     void refreshConsole();
+    void refreshTuneText();
+    void refreshCorrectionsStatus();
     void updateEnablement();
+    void updateSongMeter();
+    void showVerdict();
     void showPage (int page);
     void showEffect (int effect);
+    void showLanguageMenu();
     void openFileChooser();
+    void saveAsChooser();
     void loadFile (const juce::File&);
     void stepPreset (int delta);
     float param (const char* id) const;
-    void updateSongMeter();
-    void showVerdict();
+    bool tuneInHz() const;
 
     LotusProcessor& processor;
     lotus::ui::LotusLookAndFeel lnf;
@@ -58,8 +66,9 @@ private:
     Content content { *this };
 
     lotus::ui::LotusLogo logo;
-    lotus::ui::Segmented pageTabs { juce::StringArray { "Sound", "Effects" } };
-    juce::TextButton loadButton { "Load SF2" };
+    lotus::ui::IconButton languageButton { lotus::ui::IconButton::Icon::Globe };
+    lotus::ui::Segmented pageTabs { juce::StringArray { "Sound", "Pitch", "Effects" } };
+    juce::TextButton loadButton;
 
     lotus::ui::Card presetCard;
     lotus::ui::IconButton prevButton { lotus::ui::IconButton::Icon::Left };
@@ -77,7 +86,6 @@ private:
     std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment> consoleAttachment;
     lotus::ui::Chip formatChip, voicesChip;
     lotus::ui::SongMeter songMeter;
-    lotus::ui::VerdictPopup verdict;
     double overUntilMs = 0.0;
 
     lotus::ui::Card playCard { "Playback" };
@@ -86,6 +94,21 @@ private:
 
     lotus::ui::Card outputCard;
     lotus::ui::Knob volumeKnob, bendKnob, glideKnob;
+
+    // Pitch page
+    lotus::ui::Card vibCard { "Vibrato" };
+    lotus::ui::VibratoView vibratoView;
+    lotus::ui::Segmented vibShapeSwitch;
+    lotus::ui::Knob vibAmountKnob, vibSpeedKnob, vibDelayKnob, vibAttackKnob;
+
+    lotus::ui::Card tuneCard { "Tuning" };
+    lotus::ui::Knob tuneKnob;
+    lotus::ui::Segmented tuneUnitSwitch { juce::StringArray { "Cents", "Hz" } };
+    juce::Label tuneHint;
+
+    lotus::ui::Card sfTuneCard { "SoundFont tuning" };
+    juce::Label sfTuneText, sfTuneStatus;
+    juce::TextButton checkTuningButton, clearFixesButton;
 
     // Effects page
     lotus::ui::Card fxListCard { "Effects" };
@@ -100,12 +123,16 @@ private:
     std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment> n64PresetAttachment, ps1PresetAttachment;
     lotus::ui::Knob n64MixKnob, ps1DepthKnob;
 
-    std::vector<juce::Component*> soundPage, effectsPage;
+    // Overlays
+    lotus::ui::VerdictPopup verdict;
+    lotus::ui::TuningDialog tuningDialog;
+
+    std::array<std::vector<juce::Component*>, numPages> pages;
     std::array<std::vector<juce::Component*>, numEffects> effectControls;
 
     std::unique_ptr<juce::FileChooser> chooser;
-    int page = 0, selectedEffect = snes;
-    int seenGeneration = -1, seenPreset = -1, seenVoices = -1, seenConsole = -1;
+    int page = soundPage, selectedEffect = snes;
+    int seenGeneration = -1, seenPreset = -1, seenVoices = -1, seenConsole = -1, seenLanguage = -1, seenFixes = -1;
     bool seenEncoding = false;
     bool dragHover = false;
 
