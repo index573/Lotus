@@ -213,7 +213,7 @@ Source/ui/    look and feel, widgets, tuning dialog, translations (StringsJa.inc
 Source/fl/    FL Studio edition: the native wrapper, and the SDK headers in sdk/
 Source/       plugin processor and editor
 tests/        engine tests and the FL mock-host test (they build an SF2 in memory, so there are no fixtures)
-tools/        check_translations.py: fails if a UI string has no Japanese entry
+tools/        check_translations.py (fails if a UI string has no Japanese entry), check_pe_exports.py (checks the FL DLL's entry point)
 ```
 
 Sources and licences for the hardware tables and algorithms are in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

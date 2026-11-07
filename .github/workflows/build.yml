@@ -45,6 +45,10 @@ jobs:
       - name: Tests (engine, FL mock host)
         run: ctest --test-dir build -C Release --output-on-failure
 
+      - name: Check the FL edition's export
+        if: runner.os == 'Windows'
+        run: python tools/check_pe_exports.py build/Lotus_artefacts/Release/FL/Lotus/Lotus_x64.dll CreatePlugInstance
+
       - name: Package
         run: |
           mkdir -p dist
