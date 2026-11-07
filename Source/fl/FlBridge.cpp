@@ -148,14 +148,39 @@ public:
 
     void* openEditor (void* parent) override
     {
+        // FL shows editors from its GUI thread. If JUCE's message thread ended up being a
+        // different one, the window would belong to a thread nobody pumps and never paint.
+        if (auto* mm = juce::MessageManager::getInstance(); ! mm->isThisTheMessageThread())
+            mm->setCurrentThreadAsMessageThread();
+
         if (editor == nullptr)
         {
             editor.reset (processor->createEditorIfNeeded());
             if (editor == nullptr) return nullptr;
             editor->addComponentListener (this);
         }
-        editor->setVisible (true);
-        editor->addToDesktop (0, parent);
+
+        if (! editor->isOnDesktop() || parent != editorParent)
+        {
+            editorParent = parent;
+            editor->setOpaque (true);
+            editor->setVisible (true);
+            editor->addToDesktop (0, parent);
+
+           #if JUCE_WINDOWS
+            // JUCE 8 draws through Direct2D/DirectComposition, paced by the display's refresh.
+            // Inside FL's plugin window that never reaches the screen (the window shows
+            // whatever was behind it), so use the GDI renderer, which paints on WM_PAINT.
+            if (auto* peer = editor->getPeer())
+            {
+                const auto engines = peer->getAvailableRenderingEngines();
+                const int software = engines.indexOf ("Software Renderer");
+                if (software >= 0) peer->setCurrentRenderingEngine (software);
+            }
+           #endif
+        }
+
+        editor->repaint();
         return editor->getWindowHandle();
     }
 
@@ -164,6 +189,7 @@ public:
         if (editor == nullptr) return;
         editor->removeComponentListener (this);
         editor.reset();   // tells the processor the editor is gone
+        editorParent = nullptr;
     }
 
 private:
@@ -183,6 +209,7 @@ private:
     Host& host;
     std::unique_ptr<LotusProcessor> processor;
     std::unique_ptr<juce::AudioProcessorEditor> editor;
+    void* editorParent = nullptr;
     juce::MidiBuffer midi;
     double rate = 44100.0;
     int block = 512;
