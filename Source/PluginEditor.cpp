@@ -113,20 +113,23 @@ LotusEditor::LotusEditor (LotusProcessor& p)
       snesVolumeKnob   (p.params, ParamIDs::snesVolume,   "Volume"),
       n64MixKnob   (p.params, ParamIDs::n64Mix,   "Mix"),
       ps1DepthKnob (p.params, ParamIDs::ps1Depth, "Depth"),
-      tuningDialog (p)
+      tuningDialog (p),
+      colourPanel (p)
 {
     setLookAndFeel (&lnf);
     addAndMakeVisible (content);
 
     // Header and preset bar
     for (auto* c : std::initializer_list<juce::Component*> { &logo, &languageButton, &pageTabs, &loadButton, &presetCard,
-                                                              &prevButton, &presetBox, &nextButton, &infoLabel })
+                                                              &prevButton, &presetBox, &nextButton, &coloursButton, &infoLabel })
         content.addAndMakeVisible (c);
     pageTabs.onChange = [this] (int pg) { showPage (pg); };
     loadButton.onClick = [this] { openFileChooser(); };
     languageButton.onClick = [this] { showLanguageMenu(); };
     prevButton.onClick = [this] { stepPreset (-1); };
     nextButton.onClick = [this] { stepPreset (+1); };
+    coloursButton.onClick = [this] { colourPanel.show(); };
+    colourPanel.onChange = [this] { coloursButton.setLit (processor.hasColourPresets()); };
     presetBox.onChange = [this]
     {
         const int idx = presetBox.getSelectedId() - 1;
@@ -204,6 +207,7 @@ LotusEditor::LotusEditor (LotusProcessor& p)
 
     content.addChildComponent (verdict);
     content.addChildComponent (tuningDialog);
+    content.addChildComponent (colourPanel);
     tuningDialog.onSaveAs = [this] { saveAsChooser(); };
 
     setResizable (true, true);
@@ -247,6 +251,7 @@ void LotusEditor::applyLanguage()
     languageButton.setTooltip (tr ("Language"));
     prevButton.setTooltip (tr ("Previous preset"));
     nextButton.setTooltip (tr ("Next preset"));
+    coloursButton.setTooltip (tr ("Note colours: give each colour (MIDI channel) its own preset"));
 
     attackKnob.getSlider().setTooltip (tr ("Fade-in time. 0 = instant."));
     decayKnob.getSlider().setTooltip (tr ("Time to fall from full level to the sustain level."));
@@ -417,6 +422,7 @@ void LotusEditor::Content::resized()
     auto& e = editor;
     e.verdict.setBounds (getLocalBounds());
     e.tuningDialog.setBounds (getLocalBounds());
+    e.colourPanel.setBounds (getLocalBounds());
     auto r = getLocalBounds().reduced (20, 16);
 
     auto header = r.removeFromTop (46);
@@ -435,6 +441,8 @@ void LotusEditor::Content::resized()
     barIn.removeFromLeft (6);
     e.infoLabel.setBounds (barIn.removeFromRight (190));
     barIn.removeFromRight (8);
+    e.coloursButton.setBounds (barIn.removeFromRight (34));
+    barIn.removeFromRight (6);
     e.nextButton.setBounds (barIn.removeFromRight (34));
     barIn.removeFromRight (6);
     e.presetBox.setBounds (barIn);
@@ -575,6 +583,8 @@ void LotusEditor::timerCallback()
 {
     if (languageGeneration() != seenLanguage)
         applyLanguage();
+
+    coloursButton.setLit (processor.hasColourPresets());
 
     if (processor.soundFontGeneration.load() != seenGeneration)
     {
@@ -755,6 +765,7 @@ void LotusEditor::refreshPresetList()
         presetBox.setEnabled (false);
         prevButton.setEnabled (false);
         nextButton.setEnabled (false);
+        coloursButton.setEnabled (false);
         refreshInfo();
         return;
     }
@@ -777,6 +788,8 @@ void LotusEditor::refreshPresetList()
     presetBox.setEnabled (true);
     prevButton.setEnabled (true);
     nextButton.setEnabled (true);
+    coloursButton.setEnabled (true);
+    coloursButton.setLit (processor.hasColourPresets());
     seenPreset = processor.getPresetIndex();
     presetBox.setSelectedId (seenPreset + 1, juce::dontSendNotification);
     presetBox.setTooltip (processor.getSoundFontFile().getFullPathName());

@@ -67,6 +67,9 @@ std::vector<PresetTuning> analyzeTuning (const SoundFont& sf, const TuningOption
     otherwise healthy bank don't count (those can still be fixed with a manual check). */
 bool looksMistuned (const std::vector<PresetTuning>& results);
 
+/** Bank 128, a kit-like name, or many single-key zones with different samples. */
+bool isDrumKit (const Preset& p);
+
 using TuningCorrections = std::map<std::pair<int, int>, int>;   // (bank, program) -> cents
 
 /** A copy of `base` (sharing its samples) with the corrections applied. */

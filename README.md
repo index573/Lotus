@@ -4,7 +4,7 @@ Lotus is a SoundFont (`.sf2`) player for making video game music. Release at 0 m
 
 ![Lotus](docs/screenshot.png)
 
-Formats: **CLAP**, **VST3** and **Standalone** on Windows, macOS and Linux, plus **AU** on macOS and **LV2** on Linux.
+Formats: **CLAP**, **VST3** and **Standalone** on Windows, macOS and Linux, plus **AU** on macOS and **LV2** on Linux. There's also a native **FL Studio** edition for Windows and macOS that works with FL's slide and portamento notes and its note colours.
 
 ## What it does
 
@@ -18,6 +18,7 @@ Formats: **CLAP**, **VST3** and **Standalone** on Windows, macOS and Linux, plus
 - **Vibrato.** A per-note pitch LFO with amount, speed, delay and fade-in, like the pitch LFO in FL Studio's channel settings.
 - **Tuning.** Master tuning you can type in cents or as an A4 frequency (432 Hz, 415 Hz and so on).
 - **Tuning repair.** Drag in a SoundFont with wrong root notes and Lotus offers to fix it. It measures every preset, lets you hear each fix before you keep it, and saves a `_FIXED.sf2` copy or keeps the fixes in your project.
+- **Note colours.** Each of the 16 note colours (MIDI channels 1-16 outside FL) can play its own preset, so one Lotus can play a whole kit and a bass line from one piano roll.
 - **English and Japanese.** Switch with the globe button.
 - **Glide**, pitch-bend range, MIDI program changes, drag and drop, a scalable window.
 
@@ -135,7 +136,34 @@ Instances find each other through shared memory, so this works when your DAW loa
 - Double-click a knob to reset it, or click its value to type one (`250 ms`, `1.5 s`).
 - The Sound tab holds the instrument, the Pitch tab holds vibrato, tuning and tuning repair, and the Effects tab holds the console effects.
 - Hover over a control to see what it does. Hovering the console menu shows what that console mode emulates.
-- MIDI: notes, velocity, pitch bend, sustain (CC64), volume (CC7), pan (CC10), expression (CC11), all-notes-off and all-sound-off. Lotus listens on every channel; use one instance per instrument.
+- MIDI: notes, velocity, pitch bend, sustain (CC64), volume (CC7), pan (CC10), expression (CC11), all-notes-off and all-sound-off. Lotus listens on every channel. Channels play the main preset unless you give their note colour a preset of its own (see below); pitch bend and the CCs apply to all channels.
+
+## Note colours
+
+![Note colours](docs/colours.png)
+
+The dotted button next to the preset arrows opens the colour map. Click a colour and pick a preset for it; colours you leave alone follow the main preset. The button lights up while any colour has its own preset.
+
+In FL Studio's native edition the colours are the piano roll's note colours, and the map shows FL's own palette. Colour a few notes and they switch instrument. The colour names in FL's piano roll become the preset names, and on drum kits the keys are labelled with their samples. In every other host, and in FL with the VST version and "Map note colors to MIDI channels" turned on, colour 1 is MIDI channel 1 and so on. A program change on a channel that has its own preset changes only that channel's preset.
+
+Colour presets are saved by bank and program, so they survive the SoundFont being re-ordered. Loading a different SoundFont clears them.
+
+## FL Studio edition
+
+FL Studio only passes plain MIDI to VST and CLAP plugins. Slide notes, portamento and note colours are for native plugins only, so Lotus also comes as a native FL generator, built from the same engine and interface:
+
+- **Slides and portamento.** FL bends each voice while it plays, and Lotus follows it, including through the console pitch models. A slide on the SNES still snaps to the SNES's pitch steps, and an NES slide steps through the DMC rates.
+- **Note colours** pick presets, as described above.
+- **FL's channel controls** (volume, panning, pitch, the per-note pan and fine pitch in the piano roll) affect each voice directly. Velocity still goes through Lotus' velocity curve.
+- **Automation.** Every parameter shows up in FL's "Browse parameters" and can be automated or linked to a controller.
+- Drop an `.sf2` on the channel button to load it.
+
+To install, copy the `Lotus` folder from `Lotus-FL-Windows.zip` (or `Lotus-FL-macOS.zip`) into FL's `Plugins/Fruity/Generators` folder, then rescan in FL's plugin manager (Options > Manage plugins). It shows up as a generator called Lotus.
+
+- Windows: `C:\Program Files\Image-Line\FL Studio <version>\Plugins\Fruity\Generators\Lotus\Lotus_x64.dll`
+- macOS: inside the app bundle, `FL Studio <version>.app/Contents/Resources/FL/Plugins/Fruity/Generators/Lotus/Lotus_x64.dylib`. The build isn't signed, so run `xattr -dr com.apple.quarantine` on the folder first.
+
+The FL edition has been tested against a mock of FL's plugin interface (`tests/FlHostTest.cpp`), not inside FL itself. If something misbehaves in FL, the VST3 or CLAP version is the fallback; it loses only slides, portamento and colour names.
 
 ## Building
 
@@ -156,10 +184,10 @@ On Linux, install these first: `libasound2-dev libx11-dev libxrandr-dev libxiner
 Options:
 
 - `-DLOTUS_JUCE_DIR=...` and `-DLOTUS_CLAP_JUCE_EXTENSIONS_DIR=...` use local checkouts instead of downloading.
-- `-DLOTUS_BUILD_CLAP=OFF` skips the CLAP.
+- `-DLOTUS_BUILD_CLAP=OFF` skips the CLAP, and `-DLOTUS_BUILD_FL=OFF` skips the FL Studio edition (which lands in `FL/Lotus/`).
 - `-DLOTUS_BUILD_PLUGIN=OFF` builds only the engine and its tests (no JUCE needed); run them with `ctest --test-dir build`.
 
-GitHub Actions builds every push on Windows, macOS (universal) and Linux, runs the tests, validates the VST3 with [pluginval](https://github.com/Tracktion/pluginval), and uploads zipped plugins as build artifacts. Pushing a `v*` tag also attaches them to a GitHub release.
+GitHub Actions builds every push on Windows, macOS (universal) and Linux, runs the tests (on Linux that includes loading the FL edition through a mock FL host), validates the VST3 with [pluginval](https://github.com/Tracktion/pluginval), and uploads zipped plugins as build artifacts. Pushing a `v*` tag also attaches them to a GitHub release.
 
 ### Installing
 
@@ -182,8 +210,9 @@ It doesn't yet support modulators beyond the default velocity curve, the SF2 fil
 ```
 Source/dsp/   engine: SF2 parser, envelope, voices, consoles, codecs, effects, tuning analysis
 Source/ui/    look and feel, widgets, tuning dialog, translations (StringsJa.inc)
+Source/fl/    FL Studio edition: the native wrapper, and the SDK headers in sdk/
 Source/       plugin processor and editor
-tests/        engine tests (they build an SF2 in memory, so there are no fixtures)
+tests/        engine tests and the FL mock-host test (they build an SF2 in memory, so there are no fixtures)
 tools/        check_translations.py: fails if a UI string has no Japanese entry
 ```
 

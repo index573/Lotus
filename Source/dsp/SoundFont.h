@@ -53,6 +53,7 @@ struct Region
     int   fixedVelocity = -1;     // velocity generator override
 
     Sf2VolEnv volEnv;
+    std::string sampleName;
 };
 
 struct Preset

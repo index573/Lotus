@@ -1,10 +1,32 @@
 #include "Widgets.h"
 #include "Strings.h"
 
+#include <array>
+#include <atomic>
 #include <cmath>
 
 namespace lotus::ui
 {
+
+namespace
+{
+std::array<std::atomic<uint32_t>, 16> hostNoteColours {};   // ARGB, 0 = not set
+}
+
+void setHostNoteColour (int index, juce::Colour colour)
+{
+    hostNoteColours[(size_t) (index & 15)].store (colour.withAlpha (1.0f).getARGB());
+}
+
+juce::Colour noteColour (int index)
+{
+    if (const auto argb = hostNoteColours[(size_t) (index & 15)].load(); argb != 0)
+        return juce::Colour (argb);
+
+    // Sixteen evenly spaced pastel hues, starting from green.
+    const float hue = std::fmod (0.38f + (float) (index & 15) / 16.0f, 1.0f);
+    return juce::Colour::fromHSV (hue, 0.42f, 0.92f, 1.0f);
+}
 
 static juce::Path makePetal (float height, float width)
 {
@@ -707,8 +729,23 @@ void IconButton::paintButton (juce::Graphics& g, bool over, bool down)
     const auto r = getLocalBounds().toFloat().reduced (0.5f);
     g.setColour (down ? Palette::panelRaised.brighter (0.12f) : over ? Palette::panelRaised.brighter (0.06f) : Palette::panelRaised);
     g.fillRoundedRectangle (r, 8.0f);
-    g.setColour (over ? Palette::accent.withAlpha (0.55f) : Palette::outline);
+    g.setColour (over ? Palette::accent.withAlpha (0.55f) : lit ? Palette::accent.withAlpha (0.4f) : Palette::outline);
     g.drawRoundedRectangle (r, 8.0f, 1.0f);
+
+    if (icon == Icon::Colours)
+    {
+        // Four note-colour dots; faded until a colour has its own preset.
+        const float d = r.getHeight() * 0.2f, gap = r.getHeight() * 0.07f;
+        const auto c0 = r.getCentre();
+        for (int i = 0; i < 4; ++i)
+        {
+            const float x = c0.x + (i % 2 == 0 ? -gap * 0.5f - d : gap * 0.5f);
+            const float y = c0.y + (i / 2 == 0 ? -gap * 0.5f - d : gap * 0.5f);
+            g.setColour (noteColour (i * 4).withAlpha (! isEnabled() ? 0.2f : lit || over ? 1.0f : 0.55f));
+            g.fillEllipse (x, y, d, d);
+        }
+        return;
+    }
 
     const auto c = r.getCentre();
     const float s = r.getHeight() * 0.16f;

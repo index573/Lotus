@@ -114,27 +114,6 @@ bool isSoundEffect (const Preset& p)
     return false;
 }
 
-bool isDrumKit (const Preset& p)
-{
-    if (p.bank == 128) return true;   // GM percussion bank
-
-    const auto n = " " + lower (p.name) + " ";
-    for (const char* word : { "drum", "kit", "perc", "cymbal", "snare", "kick", "hihat", "hi-hat", " tom " })
-        if (n.find (word) != std::string::npos) return true;
-
-    // Lots of single-key zones with different samples: a mapped kit.
-    if (p.regions.size() >= 8)
-    {
-        int single = 0;
-        std::vector<uint32_t> starts;
-        for (const auto& r : p.regions)
-            if (r.loKey == r.hiKey) { ++single; starts.push_back (r.start); }
-        std::sort (starts.begin(), starts.end());
-        const auto distinct = std::unique (starts.begin(), starts.end()) - starts.begin();
-        if (single * 10 >= (int) p.regions.size() * 7 && distinct >= 4) return true;
-    }
-    return false;
-}
 
 /** Up to `count` samples of the region from `offset`, following its loop. */
 std::vector<float> extract (const SoundFont& sf, const Region& r, size_t offset, size_t count)
@@ -216,6 +195,28 @@ double sampleFundamental (const SoundFont& sf, const Region& r, bool thorough, d
     return median;
 }
 } // namespace
+
+bool isDrumKit (const Preset& p)
+{
+    if (p.bank == 128) return true;   // GM percussion bank
+
+    const auto n = " " + lower (p.name) + " ";
+    for (const char* word : { "drum", "kit", "perc", "cymbal", "snare", "kick", "hihat", "hi-hat", " tom " })
+        if (n.find (word) != std::string::npos) return true;
+
+    // Lots of single-key zones with different samples: a mapped kit.
+    if (p.regions.size() >= 8)
+    {
+        int single = 0;
+        std::vector<uint32_t> starts;
+        for (const auto& r : p.regions)
+            if (r.loKey == r.hiKey) { ++single; starts.push_back (r.start); }
+        std::sort (starts.begin(), starts.end());
+        const auto distinct = std::unique (starts.begin(), starts.end()) - starts.begin();
+        if (single * 10 >= (int) p.regions.size() * 7 && distinct >= 4) return true;
+    }
+    return false;
+}
 
 std::vector<PresetTuning> analyzeTuning (const SoundFont& sf, const TuningOptions& opt,
                                          const std::function<bool (int, int)>& progress)

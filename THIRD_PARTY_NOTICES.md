@@ -8,6 +8,10 @@ Lotus is built with [JUCE](https://juce.com), which is dual-licensed under the A
 
 The CLAP build uses [clap-juce-extensions](https://github.com/free-audio/clap-juce-extensions) and the [CLAP SDK](https://github.com/free-audio/clap), both MIT-licensed and fetched at build time.
 
+## FL Studio SDK
+
+The FL Studio edition is built against `fp_plugclass.h` and `fp_def.h` from Image-Line's FL Studio plugin SDK, in `Source/fl/sdk/` (see the README there for the one Linux-only change). Image-Line provides the SDK for making native FL Studio plugins; the headers remain Image-Line's. Facts about how FL fills in voice levels (pitch relative to the root key, velocity, colours) were checked against the SDK documentation and the [orchard-studio](https://github.com/coderroleggg/orchard-studio) research notes. No code was copied from the latter.
+
 ## ares (SNES Gaussian table)
 
 `Source/dsp/Consoles.cpp` generates the S-DSP Gaussian interpolation table with a routine adapted from ares (`ares/sfc/dsp/gaussian.cpp`):

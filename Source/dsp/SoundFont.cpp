@@ -396,6 +396,7 @@ std::unique_ptr<SoundFont> SoundFont::loadFromMemory (const void* data, size_t s
                 rg.volEnv.sustain = std::pow (10.0f, -(float) std::clamp (v (sustainVolEnv), 0, 1440) / 200.0f);
                 rg.volEnv.keyToHold = (float) v (keynumToVolEnvHold);
                 rg.volEnv.keyToDecay = (float) v (keynumToVolEnvDecay);
+                rg.sampleName = s.name;
 
                 preset.regions.push_back (rg);
             }

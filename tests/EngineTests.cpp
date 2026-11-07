@@ -8,6 +8,7 @@
 #include "../Source/dsp/Synth.h"
 #include "../Source/dsp/TuningAnalysis.h"
 #include "../Source/dsp/VoiceRegistry.h"
+#include "TestFont.h"
 
 #include <cmath>
 #include <cstdio>
@@ -21,105 +22,6 @@ using namespace lotus;
 
 static int failures = 0;
 #define CHECK(cond) do { if (! (cond)) { std::printf ("  FAIL %s:%d  %s\n", __FILE__, __LINE__, #cond); ++failures; } } while (0)
-
-// ---------------------------------------------------------------------------------
-// Minimal SF2 writer
-
-struct Bytes
-{
-    std::vector<uint8_t> d;
-    void u8 (int v) { d.push_back ((uint8_t) v); }
-    void u16 (int v) { u8 (v & 0xFF); u8 ((v >> 8) & 0xFF); }
-    void u32 (uint32_t v) { u16 ((int) (v & 0xFFFF)); u16 ((int) (v >> 16)); }
-    void str (const char* s, size_t n) { for (size_t i = 0; i < n; ++i) u8 (i < std::strlen (s) ? s[i] : 0); }
-    void id (const char* s) { str (s, 4); }
-    void append (const Bytes& b) { d.insert (d.end(), b.d.begin(), b.d.end()); }
-};
-
-static Bytes chunk (const char* id, const Bytes& body)
-{
-    Bytes b; b.id (id); b.u32 ((uint32_t) body.d.size()); b.append (body);
-    if (body.d.size() & 1) b.u8 (0);
-    return b;
-}
-
-static Bytes list (const char* type, const std::vector<Bytes>& chunks)
-{
-    Bytes body; body.id (type);
-    for (auto& c : chunks) body.append (c);
-    return chunk ("LIST", body);
-}
-
-struct TestFont
-{
-    std::vector<uint8_t> data;
-    uint32_t sampleLen = 0;
-};
-
-/** One preset ("Square", bank 0 prog 0) and a drum-ish preset (bank 0 prog 1) with
-    an exclusive class. Sample: a looped 100-sample square wave, root key 69, 44.1 kHz. */
-static TestFont makeTestFont (int releaseTimecents = 2400 /* ~4 s: the "annoying" long release */)
-{
-    const uint32_t len = 1000, loopS = 100, loopE = 900;
-    Bytes smpl;
-    for (uint32_t i = 0; i < len + 46; ++i)
-        smpl.u16 (i < len ? (((i / 50) % 2) ? 16000 : -16000) & 0xFFFF : 0);
-
-    // phdr: Square, Kick, EOP
-    Bytes phdr;
-    phdr.str ("Square", 20); phdr.u16 (0); phdr.u16 (0); phdr.u16 (0); phdr.u32 (0); phdr.u32 (0); phdr.u32 (0);
-    phdr.str ("Kit", 20);    phdr.u16 (1); phdr.u16 (0); phdr.u16 (1); phdr.u32 (0); phdr.u32 (0); phdr.u32 (0);
-    phdr.str ("EOP", 20);    phdr.u16 (0); phdr.u16 (0); phdr.u16 (2); phdr.u32 (0); phdr.u32 (0); phdr.u32 (0);
-
-    Bytes pbag; pbag.u16 (0); pbag.u16 (0); pbag.u16 (1); pbag.u16 (0); pbag.u16 (2); pbag.u16 (0);
-    Bytes pmod; for (int i = 0; i < 10; ++i) pmod.u8 (0);
-    Bytes pgen;
-    pgen.u16 (41); pgen.u16 (0);   // preset 0 -> instrument 0
-    pgen.u16 (41); pgen.u16 (1);   // preset 1 -> instrument 1
-    pgen.u16 (0);  pgen.u16 (0);   // terminator
-
-    Bytes inst;
-    inst.str ("SquareInst", 20); inst.u16 (0);
-    inst.str ("KitInst", 20);    inst.u16 (1);
-    inst.str ("EOI", 20);        inst.u16 (3);
-
-    // ibag 0: square zone; ibag 1, 2: two kit zones (keys 42 & 46, exclusive class 1)
-    Bytes ibag; int g = 0;
-    ibag.u16 (g); ibag.u16 (0); g += 3;
-    ibag.u16 (g); ibag.u16 (0); g += 3;
-    ibag.u16 (g); ibag.u16 (0); g += 3;
-    ibag.u16 (g); ibag.u16 (0);
-    Bytes imod; for (int i = 0; i < 10; ++i) imod.u8 (0);
-
-    Bytes igen;
-    igen.u16 (38); igen.u16 (releaseTimecents & 0xFFFF);  // releaseVolEnv
-    igen.u16 (54); igen.u16 (1);                          // sampleModes: loop
-    igen.u16 (53); igen.u16 (0);                          // sampleID
-    igen.u16 (43); igen.u16 (42 | (42 << 8));             // keyRange 42
-    igen.u16 (57); igen.u16 (1);                          // exclusiveClass 1
-    igen.u16 (53); igen.u16 (0);
-    igen.u16 (43); igen.u16 (46 | (46 << 8));             // keyRange 46
-    igen.u16 (57); igen.u16 (1);
-    igen.u16 (53); igen.u16 (0);
-    igen.u16 (0);  igen.u16 (0);
-
-    Bytes shdr;
-    shdr.str ("square", 20); shdr.u32 (0); shdr.u32 (len); shdr.u32 (loopS); shdr.u32 (loopE); shdr.u32 (44100);
-    shdr.u8 (69); shdr.u8 (0); shdr.u16 (0); shdr.u16 (1);
-    shdr.str ("EOS", 20); for (int i = 0; i < 26; ++i) shdr.u8 (0);
-
-    Bytes ifil; ifil.u16 (2); ifil.u16 (1);
-    Bytes inam; inam.str ("Lotus Test", 12);
-
-    Bytes body; body.id ("sfbk");
-    body.append (list ("INFO", { chunk ("ifil", ifil), chunk ("INAM", inam) }));
-    body.append (list ("sdta", { chunk ("smpl", smpl) }));
-    body.append (list ("pdta", { chunk ("phdr", phdr), chunk ("pbag", pbag), chunk ("pmod", pmod), chunk ("pgen", pgen),
-                                 chunk ("inst", inst), chunk ("ibag", ibag), chunk ("imod", imod), chunk ("igen", igen),
-                                 chunk ("shdr", shdr) }));
-    Bytes riff = chunk ("RIFF", body);
-    return { riff.d, len };
-}
 
 // ---------------------------------------------------------------------------------
 
@@ -990,6 +892,86 @@ static void testTuningAnalysis()
     if (gsf) CHECK (! looksMistuned (analyzeTuning (*gsf, { false, 15.0 })));
 }
 
+static void testNoteColours()
+{
+    std::printf ("note colours / MIDI channels pick their own preset\n");
+    EngineParams p;
+    p.cutOnNoteOff = true;
+    Rig rig (p);
+    CHECK (rig.synth.presetForColour (2) == 0);   // follows the main preset by default
+    rig.synth.setColourPreset (2, 1);            // colour 3 plays the kit
+    CHECK (rig.synth.presetForColour (2) == 1);
+    rig.synth.setColourPreset (5, 99);           // out of range falls back to the main preset
+    CHECK (rig.synth.presetForColour (5) == 0);
+
+    rig.synth.noteOn (69, 127, 2);               // the kit has nothing on key 69
+    rig.run (0.01);
+    CHECK (rig.synth.getActiveVoiceCount() == 0);
+    const uint8_t kitOn[] = { 0x92, 42, 127 };   // MIDI channel 3 = colour 3
+    rig.synth.handleMidi (kitOn, 3);
+    rig.run (0.01);
+    CHECK (rig.synth.getActiveVoiceCount() == 1);
+
+    // Same key on two channels: a note-off only ends its own channel.
+    rig.synth.allSoundOff();
+    rig.synth.noteOn (69, 127, 0);
+    rig.synth.noteOn (69, 127, 3);
+    rig.run (0.01);
+    CHECK (rig.synth.getActiveVoiceCount() == 2);
+    rig.synth.noteOff (69, 3);
+    rig.run (0.02);
+    CHECK (rig.synth.getActiveVoiceCount() == 1);
+
+    // A program change on a channel with its own slot only changes that slot.
+    const uint8_t pc[] = { 0xC2, 0 };
+    rig.synth.handleMidi (pc, 2);
+    CHECK (rig.synth.getColourPreset (2) == 0);
+    CHECK (rig.synth.getPresetIndex() == 0);
+}
+
+static void testHostNotes()
+{
+    std::printf ("host-driven notes follow live pitch and level changes (FL slides)\n");
+    EngineParams p;
+    p.cutOnNoteOff = true;
+    Rig rig (p);
+    const uint32_t id = rig.synth.hostNoteOn (69, 100, 0, 0.0f, 1.0f, 0.0f);
+    CHECK (id != 0);
+    rig.run (0.05);
+    auto a = rig.run (0.2);
+    CHECK (std::fabs (zeroCrossFreq (a, rig.rate) - 441.0) < 5.0);
+
+    rig.synth.hostNoteLevels (id, 1200.0f, 1.0f, 0.0f);   // slide up an octave
+    rig.run (0.05);
+    auto b = rig.run (0.2);
+    CHECK (std::fabs (zeroCrossFreq (b, rig.rate) - 882.0) < 8.0);
+
+    rig.synth.hostNoteLevels (id, 1200.0f, 0.5f, 0.0f);   // host volume halves the level
+    rig.run (0.05);
+    auto c = rig.run (0.1);
+    CHECK (std::fabs (peak (c, 0, c.size()) / peak (b, 0, b.size()) - 0.5f) < 0.05f);
+
+    rig.synth.noteOff (69);                    // MIDI note-offs don't touch host notes
+    rig.run (0.01);
+    CHECK (rig.synth.isNoteSounding (id));
+    rig.synth.hostNoteOff (id);
+    rig.run (0.02);
+    CHECK (! rig.synth.isNoteSounding (id));
+
+    // Kill fades out quickly even with a long release.
+    EngineParams q;
+    q.release = 2.0f;
+    Rig rig2 (q);
+    const uint32_t id2 = rig2.synth.hostNoteOn (69, 100, 0, 0.0f, 1.0f, 0.0f);
+    rig2.run (0.05);
+    rig2.synth.hostNoteOff (id2);
+    rig2.run (0.05);
+    CHECK (rig2.synth.isNoteSounding (id2));   // still in its release
+    rig2.synth.hostNoteKill (id2);
+    rig2.run (0.02);
+    CHECK (! rig2.synth.isNoteSounding (id2));
+}
+
 int main()
 {
     testParser();
@@ -1001,6 +983,8 @@ int main()
     testSustainPedal();
     testExclusiveClass();
     testProgramChange();
+    testNoteColours();
+    testHostNotes();
     testConsoles();
     testSnesEcho();
     testPs1Reverb();

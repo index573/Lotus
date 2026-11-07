@@ -422,6 +422,7 @@ juce::String LotusProcessor::loadSoundFont (const juce::File& file, bool userIni
         synth.setCodedPool (nullptr, lotus::Codec::None);
         oldPool = std::move (installedPool);
         installedCodec = lotus::Codec::None;
+        if (file != soundFontFile) clearColourPresets();   // slots point at presets of the old file
         soundFontFile = file;
     }
     loadedSoundFont = loaded;
@@ -432,6 +433,7 @@ juce::String LotusProcessor::loadSoundFont (const juce::File& file, bool userIni
 
     ++soundFontGeneration;
     updateHostDisplay (ChangeDetails().withProgramChanged (true));
+    notifyNamesChanged();
 
     if (userInitiated)
         startTuningCheck (true);
@@ -633,6 +635,84 @@ void LotusProcessor::selectPreset (int index)
 {
     synth.setPresetIndex (index);
     updateHostDisplay (ChangeDetails().withProgramChanged (true));
+    notifyNamesChanged();
+}
+
+void LotusProcessor::notifyNamesChanged()
+{
+    if (onNamesChanged == nullptr) return;
+    if (juce::MessageManager::existsAndIsCurrentThread()) onNamesChanged();
+    else juce::MessageManager::callAsync ([safe = juce::WeakReference<LotusProcessor> (this)]
+                                          { if (safe != nullptr && safe->onNamesChanged) safe->onNamesChanged(); });
+}
+
+void LotusProcessor::clearColourPresets()
+{
+    for (int c = 0; c < lotus::Synth::numColours; ++c) synth.setColourPreset (c, -1);
+}
+
+void LotusProcessor::setColourPreset (int colour, int presetIndex)
+{
+    synth.setColourPreset (colour, presetIndex);
+    notifyNamesChanged();
+}
+
+bool LotusProcessor::hasColourPresets() const
+{
+    for (int c = 0; c < lotus::Synth::numColours; ++c)
+        if (synth.getColourPreset (c) >= 0) return true;
+    return false;
+}
+
+juce::String LotusProcessor::getColourPresetName (int colour) const
+{
+    const juce::SpinLock::ScopedTryLockType lock (engineLock);
+    if (! lock.isLocked() || soundFont == nullptr || soundFont->presets.empty()) return {};
+    const int idx = juce::jlimit (0, (int) soundFont->presets.size() - 1, synth.presetForColour (colour));
+    return juce::String::fromUTF8 (soundFont->presets[(size_t) idx].name.c_str());
+}
+
+juce::String LotusProcessor::getKeyName (int key, int colour) const
+{
+    const juce::SpinLock::ScopedTryLockType lock (engineLock);
+    if (! lock.isLocked() || soundFont == nullptr || soundFont->presets.empty()) return {};
+    const int idx = juce::jlimit (0, (int) soundFont->presets.size() - 1, synth.presetForColour (colour));
+    const auto& preset = soundFont->presets[(size_t) idx];
+    if (! lotus::isDrumKit (preset)) return {};
+    for (const auto& r : preset.regions)
+        if (key >= r.loKey && key <= r.hiKey && 100 >= r.loVel && 100 <= r.hiVel)
+            return juce::String::fromUTF8 (r.sampleName.c_str());
+    return {};
+}
+
+uint32_t LotusProcessor::hostNoteOn (int key, int velocity, int colour, float pitchCents, float gain, float pan)
+{
+    const juce::SpinLock::ScopedLockType lock (engineLock);
+    return synth.hostNoteOn (key, velocity, colour, pitchCents, gain, pan);
+}
+
+void LotusProcessor::hostNoteLevels (uint32_t id, float pitchCents, float gain, float pan)
+{
+    const juce::SpinLock::ScopedLockType lock (engineLock);
+    synth.hostNoteLevels (id, pitchCents, gain, pan);
+}
+
+void LotusProcessor::hostNoteOff (uint32_t id)
+{
+    const juce::SpinLock::ScopedLockType lock (engineLock);
+    synth.hostNoteOff (id);
+}
+
+void LotusProcessor::hostNoteKill (uint32_t id)
+{
+    const juce::SpinLock::ScopedLockType lock (engineLock);
+    synth.hostNoteKill (id);
+}
+
+bool LotusProcessor::isNoteSounding (uint32_t id) const
+{
+    const juce::SpinLock::ScopedLockType lock (engineLock);
+    return synth.isNoteSounding (id);
 }
 
 int LotusProcessor::findPresetForProgram (int program) const
@@ -693,6 +773,18 @@ void LotusProcessor::getStateInformation (juce::MemoryBlock& destData)
         state.setProperty ("presetProgram", pr.program, nullptr);
     }
 
+    // Colour slots by bank:program, so they survive presets being reordered.
+    juce::StringArray colours;
+    for (int c = 0; c < lotus::Synth::numColours; ++c)
+    {
+        const int idx = synth.getColourPreset (c);
+        if (soundFont && juce::isPositiveAndBelow (idx, (int) soundFont->presets.size()))
+            colours.add (juce::String (soundFont->presets[(size_t) idx].bank) + ":" + juce::String (soundFont->presets[(size_t) idx].program));
+        else
+            colours.add ("-");
+    }
+    state.setProperty ("colourPresets", colours.joinIntoString (","), nullptr);
+
     auto fixes = juce::ValueTree ("TuningFixes");
     for (const auto& [key, cents] : storedCorrections)
     {
@@ -746,8 +838,18 @@ void LotusProcessor::setStateInformation (const void* data, int sizeInBytes)
         int index = soundFont->findPreset ((int) state.getProperty ("presetBank", -1), (int) state.getProperty ("presetProgram", -1));
         if (index < 0) index = (int) state.getProperty ("presetIndex", 0);
         synth.setPresetIndex (index);
+
+        const auto colours = juce::StringArray::fromTokens (state.getProperty ("colourPresets", {}).toString(), ",", {});
+        for (int c = 0; c < lotus::Synth::numColours; ++c)
+        {
+            const juce::String slot = c < colours.size() ? colours[c] : juce::String ("-");
+            synth.setColourPreset (c, slot.contains (":") ? soundFont->findPreset (slot.upToFirstOccurrenceOf (":", false, false).getIntValue(),
+                                                                                    slot.fromFirstOccurrenceOf (":", false, false).getIntValue())
+                                                          : -1);
+        }
     }
     ++soundFontGeneration;
+    notifyNamesChanged();
 }
 
 juce::AudioProcessorEditor* LotusProcessor::createEditor()

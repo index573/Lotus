@@ -42,7 +42,7 @@ jobs:
       - name: Build
         run: cmake --build build --config Release --parallel 4
 
-      - name: Engine tests
+      - name: Tests (engine, FL mock host)
         run: ctest --test-dir build -C Release --output-on-failure
 
       - name: Package
@@ -59,6 +59,10 @@ jobs:
           cd CLAP
           if [ "$RUNNER_OS" = "Windows" ]; then 7z a "$GITHUB_WORKSPACE/dist/Lotus-CLAP-${{ matrix.name }}.zip" Lotus.clap
           else zip -qry "$GITHUB_WORKSPACE/dist/Lotus-CLAP-${{ matrix.name }}.zip" Lotus.clap; fi
+          # FL Studio edition: the "Lotus" folder goes into Plugins/Fruity/Generators.
+          cd ../FL
+          if [ "$RUNNER_OS" = "Windows" ]; then 7z a "$GITHUB_WORKSPACE/dist/Lotus-FL-${{ matrix.name }}.zip" Lotus/Lotus_x64.dll
+          elif [ "$RUNNER_OS" = "macOS" ]; then zip -qry "$GITHUB_WORKSPACE/dist/Lotus-FL-${{ matrix.name }}.zip" Lotus/Lotus_x64.dylib; fi
 
       - uses: actions/upload-artifact@v4
         with:
@@ -69,6 +73,12 @@ jobs:
         with:
           name: Lotus-CLAP-${{ matrix.name }}
           path: dist/Lotus-CLAP-${{ matrix.name }}.zip
+
+      - uses: actions/upload-artifact@v4
+        if: runner.os != 'Linux'
+        with:
+          name: Lotus-FL-${{ matrix.name }}
+          path: dist/Lotus-FL-${{ matrix.name }}.zip
 
       - name: Validate with pluginval
         run: |

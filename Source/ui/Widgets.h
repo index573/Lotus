@@ -15,6 +15,12 @@ public:
 };
 
 /** A rounded card with a small caps title. */
+/** The colour Lotus shows for note colour `index` (0-15). */
+juce::Colour noteColour (int index);
+
+/** Show the host's own note colours instead (FL Studio passes its palette). */
+void setHostNoteColour (int index, juce::Colour colour);
+
 class Card final : public juce::Component
 {
 public:
@@ -208,12 +214,14 @@ private:
 class IconButton final : public juce::Button
 {
 public:
-    enum class Icon { Left, Right, Globe };
+    enum class Icon { Left, Right, Globe, Colours };
     explicit IconButton (Icon i) : juce::Button ({}), icon (i) {}
     void paintButton (juce::Graphics&, bool over, bool down) override;
+    void setLit (bool shouldBeLit) { if (lit != shouldBeLit) { lit = shouldBeLit; repaint(); } }
 
 private:
     Icon icon;
+    bool lit = false;
 };
 
 } // namespace lotus::ui

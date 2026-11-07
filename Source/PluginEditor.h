@@ -1,6 +1,7 @@
 #pragma once
 
 #include "PluginProcessor.h"
+#include "ui/ColourPanel.h"
 #include "ui/LotusLookAndFeel.h"
 #include "ui/TuningDialog.h"
 #include "ui/Widgets.h"
@@ -73,6 +74,7 @@ private:
     lotus::ui::Card presetCard;
     lotus::ui::IconButton prevButton { lotus::ui::IconButton::Icon::Left };
     lotus::ui::IconButton nextButton { lotus::ui::IconButton::Icon::Right };
+    lotus::ui::IconButton coloursButton { lotus::ui::IconButton::Icon::Colours };
     juce::ComboBox presetBox;
     juce::Label infoLabel;
 
@@ -126,6 +128,7 @@ private:
     // Overlays
     lotus::ui::VerdictPopup verdict;
     lotus::ui::TuningDialog tuningDialog;
+    lotus::ui::ColourPanel colourPanel;
 
     std::array<std::vector<juce::Component*>, numPages> pages;
     std::array<std::vector<juce::Component*>, numEffects> effectControls;

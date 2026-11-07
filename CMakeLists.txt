@@ -12,6 +12,7 @@ set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 option(LOTUS_BUILD_PLUGIN "Build the plugin (requires JUCE)" ON)
 option(LOTUS_BUILD_TESTS  "Build the headless engine tests" ON)
 option(LOTUS_BUILD_CLAP   "Also build a CLAP plugin (via clap-juce-extensions)" ON)
+option(LOTUS_BUILD_FL     "Also build the native FL Studio generator" ON)
 
 # -----------------------------------------------------------------------------
 # Engine (framework-free, shared by the plugin and the tests)
@@ -84,6 +85,7 @@ if(LOTUS_BUILD_PLUGIN)
     target_sources(Lotus PRIVATE
         Source/PluginProcessor.cpp
         Source/PluginEditor.cpp
+        Source/ui/ColourPanel.cpp
         Source/ui/LotusLookAndFeel.cpp
         Source/ui/Strings.cpp
         Source/ui/TuningDialog.cpp
@@ -107,6 +109,37 @@ if(LOTUS_BUILD_PLUGIN)
             juce::juce_recommended_config_flags
             juce::juce_recommended_lto_flags
             juce::juce_recommended_warning_flags)
+
+    # --- FL Studio native ----------------------------------------------------
+    # A native FL generator (Plugins/Fruity/Generators/Lotus/Lotus_x64.dll or .dylib)
+    # around the same processor and editor, for FL's slides, portamento and note colours.
+    # It also builds on Linux, where only the mock-host test loads it.
+    if(LOTUS_BUILD_FL)
+        add_library(Lotus_FL MODULE Source/fl/FlPlugin.cpp Source/fl/FlBridge.cpp)
+        target_link_libraries(Lotus_FL PRIVATE Lotus lotus_engine)
+        # Same JUCE configuration as the plugin's shared code.
+        target_include_directories(Lotus_FL PRIVATE $<TARGET_PROPERTY:Lotus,INCLUDE_DIRECTORIES>)
+        target_compile_definitions(Lotus_FL PRIVATE $<TARGET_PROPERTY:Lotus,COMPILE_DEFINITIONS>)
+        target_compile_options(Lotus_FL PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/utf-8>)
+        set_target_properties(Lotus_FL PROPERTIES
+            OUTPUT_NAME "Lotus_x64"
+            PREFIX ""
+            LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/Lotus_artefacts/$<CONFIG>/FL/Lotus"
+            CXX_VISIBILITY_PRESET hidden
+            VISIBILITY_INLINES_HIDDEN ON)
+        if(APPLE)
+            set_target_properties(Lotus_FL PROPERTIES SUFFIX ".dylib")
+            target_link_libraries(Lotus_FL PRIVATE "-framework Cocoa")
+        endif()
+
+        # Loads the module through a mock FL host (Linux only: FL itself isn't available here).
+        if(LOTUS_BUILD_TESTS AND UNIX AND NOT APPLE)
+            add_executable(lotus_fl_host_test tests/FlHostTest.cpp)
+            target_link_libraries(lotus_fl_host_test PRIVATE ${CMAKE_DL_LIBS})
+            add_dependencies(lotus_fl_host_test Lotus_FL)
+            add_test(NAME fl_host COMMAND lotus_fl_host_test $<TARGET_FILE:Lotus_FL>)
+        endif()
+    endif()
 
     # --- CLAP ---------------------------------------------------------------
     # JUCE 8 has no native CLAP support; clap-juce-extensions wraps the same

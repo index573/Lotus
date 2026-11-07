@@ -7,6 +7,7 @@
 #include "dsp/TuningAnalysis.h"
 #include "dsp/VoiceRegistry.h"
 
+#include <functional>
 #include <thread>
 #include <unordered_map>
 
@@ -116,6 +117,27 @@ public:
     int  getPresetIndex() const { return synth.getPresetIndex(); }
     void selectPreset (int index);
 
+    // --- Note colours -------------------------------------------------------------
+    // Each of FL Studio's 16 note colours (MIDI channels 1-16 in other hosts) can play its
+    // own preset; -1 follows the main preset.
+    void setColourPreset (int colour, int presetIndex);
+    int  getColourPreset (int colour) const { return synth.getColourPreset (colour); }
+    juce::String getColourPresetName (int colour) const;   // what notes of that colour play
+    bool hasColourPresets() const;
+
+    /** For drum kits: the sample on a key, so FL's piano roll can label it. Empty otherwise. */
+    juce::String getKeyName (int key, int colour) const;
+
+    /** Called on the message thread when preset or colour names change. */
+    std::function<void()> onNamesChanged;
+
+    // --- Host-driven notes (the FL Studio edition) ---------------------------------
+    uint32_t hostNoteOn (int key, int velocity, int colour, float pitchCents, float gain, float pan);
+    void hostNoteLevels (uint32_t id, float pitchCents, float gain, float pan);
+    void hostNoteOff (uint32_t id);
+    void hostNoteKill (uint32_t id);
+    bool isNoteSounding (uint32_t id) const;
+
     int  getActiveVoiceCount() const { return synth.getActiveVoiceCount(); }
     bool consumePresetChangedByMidi() { return synth.presetChangedByMidi.exchange (false); }
 
@@ -133,6 +155,8 @@ public:
 private:
     static juce::AudioProcessorValueTreeState::ParameterLayout createLayout();
     int findPresetForProgram (int program) const;
+    void notifyNamesChanged();
+    void clearColourPresets();
     float value (const char* id) const;
 
     void timerCallback() override;
@@ -150,7 +174,7 @@ private:
     std::shared_ptr<const lotus::SoundFont> loadedSoundFont;   // as read from disk
     lotus::TuningCorrections storedCorrections;
     juce::File soundFontFile;
-    juce::SpinLock engineLock;   // guards SoundFont/pool swaps; the audio thread only try-locks
+    mutable juce::SpinLock engineLock;   // guards SoundFont/pool swaps; the audio thread only try-locks
 
     std::vector<float> scratchR;
     int registrySlot = -1;
@@ -182,5 +206,6 @@ private:
     double previewOffAtMs = 0.0;
     bool previewPlaying = false;
 
+    JUCE_DECLARE_WEAK_REFERENCEABLE (LotusProcessor)
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (LotusProcessor)
 };

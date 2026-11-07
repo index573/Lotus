@@ -63,11 +63,30 @@ public:
 
     void setParams (const EngineParams& p);
 
+    /** MIDI input. The channel picks the preset slot of the matching note colour. */
     void handleMidi (const uint8_t* data, int size);
-    void noteOn (int key, int velocity);
-    void noteOff (int key);
+    void noteOn (int key, int velocity, int channel = 0);
+    void noteOff (int key, int channel = 0);
     void allNotesOff();
     void allSoundOff();
+
+    // --- Note colours ------------------------------------------------------------
+    // FL Studio's 16 note colours (MIDI channels 1-16 elsewhere) can each play their own
+    // preset. -1 follows the main preset.
+    static constexpr int numColours = 16;
+    void setColourPreset (int colour, int presetIndex);
+    int  getColourPreset (int colour) const;
+    int  presetForColour (int colour) const;   // the preset a note of that colour plays
+
+    // --- Host-driven notes -------------------------------------------------------
+    // For hosts with their own voice system (FL Studio's native format). Pitch, volume and
+    // pan stay under the host's control while the note plays, which is how FL's slides and
+    // portamento reach the engine. Ids are never 0.
+    uint32_t hostNoteOn (int key, int velocity, int colour, float pitchCents, float gain, float pan);
+    void hostNoteLevels (uint32_t id, float pitchCents, float gain, float pan);
+    void hostNoteOff (uint32_t id);
+    void hostNoteKill (uint32_t id);
+    bool isNoteSounding (uint32_t id) const;
 
     void render (float* left, float* right, int numSamples);
 
@@ -82,6 +101,11 @@ private:
         const Region* region = nullptr;
         int key = 0;
         int pitchKey = 0;
+        int channel = 0;
+        bool hostOwned = false;
+        float hostCents = 0.0f, hostCentsTarget = 0.0f;   // live pitch offset from the host
+        float hostGain = 1.0f, hostGainTarget = 1.0f;
+        float hostPan = 0.0f;
         uint32_t noteId = 0;
         uint32_t age = 0;
         bool held = false, sustained = false, released = false, hasLooped = false;
@@ -96,7 +120,8 @@ private:
         Envelope env;
     };
 
-    void startVoice (const Region& r, int key, int velocity, uint32_t noteId);
+    uint32_t startNote (int key, int velocity, int channel, bool hostOwned);
+    Voice& startVoice (const Region& r, int key, int velocity, uint32_t noteId);
     void releaseVoice (Voice& v);
     Voice& allocateVoice();
     void updatePitch (Voice& v) const;
@@ -112,6 +137,7 @@ private:
     const std::vector<int16_t>* codedPool = nullptr;
     Codec codedPoolCodec = Codec::None;
     std::atomic<int> presetIndex { 0 };
+    std::array<std::atomic<int>, numColours> colourPresets;
 
     EngineParams params;
     ConsoleId activeConsole = ConsoleId::Modern;

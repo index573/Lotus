@@ -25,6 +25,7 @@ inline float hermite (float xm1, float x0, float x1, float x2, float t)
 Synth::Synth()
 {
     profile = &getConsoleProfile (ConsoleId::Modern);
+    for (auto& c : colourPresets) c.store (-1);
 }
 
 void Synth::prepare (double hostSampleRate, int maxBlockSize)
@@ -86,6 +87,24 @@ void Synth::setPresetIndex (int index)
     presetIndex = std::clamp (index, 0, (int) soundFont->presets.size() - 1);
 }
 
+void Synth::setColourPreset (int colour, int index)
+{
+    if (colour >= 0 && colour < numColours) colourPresets[(size_t) colour].store (index < 0 ? -1 : index);
+}
+
+int Synth::getColourPreset (int colour) const
+{
+    return (colour >= 0 && colour < numColours) ? colourPresets[(size_t) colour].load() : -1;
+}
+
+int Synth::presetForColour (int colour) const
+{
+    const int main = presetIndex.load();
+    if (soundFont == nullptr) return main;
+    const int slot = getColourPreset (colour);
+    return (slot >= 0 && slot < (int) soundFont->presets.size()) ? slot : main;
+}
+
 void Synth::setParams (const EngineParams& p)
 {
     params = p;
@@ -102,13 +121,14 @@ void Synth::handleMidi (const uint8_t* d, int size)
 {
     if (size < 1) return;
     const int status = d[0] & 0xF0;
+    const int channel = d[0] & 0x0F;
     const int d1 = size > 1 ? d[1] & 0x7F : 0;
     const int d2 = size > 2 ? d[2] & 0x7F : 0;
 
     switch (status)
     {
-        case 0x90: if (d2 > 0) noteOn (d1, d2); else noteOff (d1); break;
-        case 0x80: noteOff (d1); break;
+        case 0x90: if (d2 > 0) noteOn (d1, d2, channel); else noteOff (d1, channel); break;
+        case 0x80: noteOff (d1, channel); break;
         case 0xE0: pitchBend = (float) (((d2 << 7) | d1) - 8192) / 8192.0f; break;
 
         case 0xC0:
@@ -117,7 +137,12 @@ void Synth::handleMidi (const uint8_t* d, int size)
                 int idx = soundFont->findPreset (bankMsb * 128 + bankLsb, d1);
                 if (idx < 0) idx = soundFont->findPreset (bankMsb, d1);
                 if (idx < 0) idx = soundFont->findPreset (0, d1);
-                if (idx >= 0 && idx != presetIndex.load())
+                if (idx >= 0 && getColourPreset (channel) >= 0)
+                {
+                    setColourPreset (channel, idx);   // a channel with its own slot changes only that slot
+                    presetChangedByMidi = true;
+                }
+                else if (idx >= 0 && idx != presetIndex.load())
                 {
                     allNotesOff();
                     presetIndex = idx;
@@ -154,20 +179,28 @@ void Synth::handleMidi (const uint8_t* d, int size)
     }
 }
 
-void Synth::noteOn (int key, int velocity)
+void Synth::noteOn (int key, int velocity, int channel)
 {
-    if (soundFont == nullptr || soundFont->presets.empty()) return;
-    const auto& preset = soundFont->presets[(size_t) std::clamp (presetIndex.load(), 0, (int) soundFont->presets.size() - 1)];
+    startNote (key, velocity, channel, false);
+}
 
-    // Re-striking a key ends whatever that key was already playing.
-    for (auto& v : voices)
-        if (v.active && v.key == key && ! v.released)
-        {
-            v.sustained = false;
-            releaseVoice (v);
-        }
+uint32_t Synth::startNote (int key, int velocity, int channel, bool hostOwned)
+{
+    if (soundFont == nullptr || soundFont->presets.empty()) return 0;
+    const int index = std::clamp (presetForColour (channel), 0, (int) soundFont->presets.size() - 1);
+    const auto& preset = soundFont->presets[(size_t) index];
 
-    const uint32_t noteId = ++noteCounter;
+    // Re-striking a MIDI key ends whatever that key was already playing on its channel.
+    // Host-driven notes are ended by the host.
+    if (! hostOwned)
+        for (auto& v : voices)
+            if (v.active && ! v.hostOwned && v.key == key && v.channel == channel && ! v.released)
+            {
+                v.sustained = false;
+                releaseVoice (v);
+            }
+
+    const uint32_t noteId = ++noteCounter == 0 ? ++noteCounter : noteCounter;
 
     for (const auto& r : preset.regions)
     {
@@ -181,20 +214,73 @@ void Synth::noteOn (int key, int velocity)
                     v.env.cut();
                 }
 
-        startVoice (r, key, velocity, noteId);
+        Voice& v = startVoice (r, key, velocity, noteId);
+        v.channel = channel;
+        v.hostOwned = hostOwned;
     }
     lastKey = key;
+    return noteId;
 }
 
-void Synth::noteOff (int key)
+void Synth::noteOff (int key, int channel)
 {
     for (auto& v : voices)
     {
-        if (! v.active || v.key != key || ! v.held) continue;
+        if (! v.active || v.hostOwned || v.key != key || v.channel != channel || ! v.held) continue;
         v.held = false;
         if (sustainPedal) v.sustained = true;
         else releaseVoice (v);
     }
+}
+
+uint32_t Synth::hostNoteOn (int key, int velocity, int colour, float pitchCents, float gain, float pan)
+{
+    const uint32_t id = startNote (std::clamp (key, 0, 127), std::clamp (velocity, 1, 127),
+                                   std::clamp (colour, 0, numColours - 1), true);
+    for (auto& v : voices)
+        if (v.active && v.noteId == id)
+        {
+            v.hostCents = v.hostCentsTarget = pitchCents;
+            v.hostGain = v.hostGainTarget = std::max (0.0f, gain);
+            v.hostPan = pan;
+            updatePitch (v);
+        }
+    return id;
+}
+
+void Synth::hostNoteLevels (uint32_t id, float pitchCents, float gain, float pan)
+{
+    for (auto& v : voices)
+        if (v.active && v.noteId == id)
+        {
+            v.hostCentsTarget = pitchCents;
+            v.hostGainTarget = std::max (0.0f, gain);
+            v.hostPan = pan;
+        }
+}
+
+void Synth::hostNoteOff (uint32_t id)
+{
+    for (auto& v : voices)
+        if (v.active && v.noteId == id) releaseVoice (v);
+}
+
+void Synth::hostNoteKill (uint32_t id)
+{
+    for (auto& v : voices)
+        if (v.active && v.noteId == id)
+        {
+            v.released = true;
+            v.held = false;
+            v.env.cut();
+        }
+}
+
+bool Synth::isNoteSounding (uint32_t id) const
+{
+    for (const auto& v : voices)
+        if (v.active && v.noteId == id) return true;
+    return false;
 }
 
 void Synth::releaseVoice (Voice& v)
@@ -243,7 +329,7 @@ Synth::Voice& Synth::allocateVoice()
     return best != nullptr ? *best : voices[0];
 }
 
-void Synth::startVoice (const Region& r, int key, int velocity, uint32_t noteId)
+Synth::Voice& Synth::startVoice (const Region& r, int key, int velocity, uint32_t noteId)
 {
     Voice& v = allocateVoice();
     v.active = true;
@@ -251,6 +337,11 @@ void Synth::startVoice (const Region& r, int key, int velocity, uint32_t noteId)
     v.key = key;
     v.pitchKey = r.fixedKey >= 0 ? r.fixedKey : key;
     v.noteId = noteId;
+    v.channel = 0;
+    v.hostOwned = false;
+    v.hostCents = v.hostCentsTarget = 0.0f;
+    v.hostGain = v.hostGainTarget = 1.0f;
+    v.hostPan = 0.0f;
     v.age = ++ageCounter;
     v.held = true;
     v.sustained = false;
@@ -296,6 +387,7 @@ void Synth::startVoice (const Region& r, int key, int velocity, uint32_t noteId)
     v.env.start (ep, engineRate);
 
     updatePitch (v);
+    return v;
 }
 
 void Synth::updatePitch (Voice& v) const
@@ -303,7 +395,7 @@ void Synth::updatePitch (Voice& v) const
     const Region& r = *v.region;
     const double cents = (v.pitchKey - r.rootKey) * (double) r.scaleTuning + r.tuneCents
                        + (double) pitchBend * params.bendRange * 100.0 + v.glideCents
-                       + v.vibCents + params.tuneCents;
+                       + v.vibCents + v.hostCents + params.tuneCents;
     const double rel = std::pow (2.0, cents / 1200.0);
     const double playbackHz = r.sampleRate * rel;
 
@@ -501,14 +593,23 @@ void Synth::renderEngine (float* outL, float* outR, int n)
     {
         if (! v.active) continue;
 
-        const float p = std::clamp (v.pan + ccPan, -1.0f, 1.0f);
-        const float g = v.baseGain * channelGain;
-        const float gl = g * std::min (1.0f, 1.0f - p);   // balance law: centre = unity
-        const float gr = g * std::min (1.0f, 1.0f + p);
+        const float p = std::clamp (v.pan + ccPan + v.hostPan, -1.0f, 1.0f);
+        const float panL = std::min (1.0f, 1.0f - p);   // balance law: centre = unity
+        const float panR = std::min (1.0f, 1.0f + p);
+
+        // Host levels ramp to their new values over the block (no zipper noise on slides).
+        const float c0 = v.hostCents, c1 = v.hostCentsTarget;
+        const float g0 = v.hostGain, g1 = v.hostGainTarget;
 
         for (int done = 0; done < n && v.active; done += chunk)
         {
             const int len = std::min (chunk, n - done);
+            const float t = (float) (done + len) / (float) n;
+            v.hostCents = c0 + (c1 - c0) * t;
+            v.hostGain = g0 + (g1 - g0) * t;
+            const float g = v.baseGain * channelGain * v.hostGain;
+            const float gl = g * panL, gr = g * panR;
+
             v.vibCents = vibratoCents (v.vibTime);
             updatePitch (v);
 
