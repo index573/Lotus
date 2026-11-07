@@ -77,6 +77,10 @@ Click it after playing your song through and Lotus tells you how many of that co
 
 ![Verdict](docs/verdict.png)
 
+If the tracks in your project target different consoles, the light goes dark (it reads "mixed"), because one console's limit can't be judged against another's. Clicking it then lists the consoles in use. A track only counts once it has played, so freshly loaded tracks don't trigger this.
+
+![Console mismatch](docs/mismatch.png)
+
 Instances find each other through shared memory, so this works when your DAW loads plugins in the same process, which is the usual setup. Instances it can't see are those running in a separate plugin sandbox or bridge, or a VST3 and a CLAP copy mixed in one project. It's a warning only: each instance still steals voices on its own when the Voices chip is on.
 
 ## Using it

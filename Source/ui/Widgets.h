@@ -122,7 +122,7 @@ class SongMeter final : public juce::Component, public juce::SettableTooltipClie
 {
 public:
     SongMeter() { setMouseCursor (juce::MouseCursor::PointingHandCursor); }
-    void setState (int voices, int limit, bool overHeld);
+    void setState (int voices, int limit, bool overHeld, bool mismatch);
     void paint (juce::Graphics&) override;
     void mouseDown (const juce::MouseEvent&) override { if (onClick) onClick(); }
     void mouseEnter (const juce::MouseEvent&) override { repaint(); }
@@ -131,7 +131,7 @@ public:
 
 private:
     int voices = 0, limit = 0;
-    bool overHeld = false;
+    bool overHeld = false, mismatch = false;
 };
 
 /** "This song takes N consoles to run" card, drawn over the whole window. */
@@ -140,6 +140,7 @@ class VerdictPopup final : public juce::Component, private juce::Timer
 public:
     VerdictPopup();
     void show (int consoles, const juce::String& title, const juce::String& detail);
+    void showConfused (const juce::String& title, const juce::String& detail);
     void paint (juce::Graphics&) override;
     void resized() override;
     void mouseDown (const juce::MouseEvent&) override;
@@ -152,6 +153,7 @@ private:
     static void drawConsole (juce::Graphics&, juce::Rectangle<float>, int mood);
 
     int count = 1;
+    bool confused = false;
     float phase = 0.0f;
     juce::String title, detail;
     juce::TextButton resetButton { "Reset peak" }, closeButton { "Nice!" };

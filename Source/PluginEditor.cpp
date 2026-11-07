@@ -1,5 +1,7 @@
 #include "PluginEditor.h"
 
+#include <algorithm>
+
 using namespace lotus::ui;
 
 namespace
@@ -465,9 +467,17 @@ void LotusEditor::updateSongMeter()
     auto& reg = lotus::VoiceRegistry::get();
     const int now = reg.currentTotal (console);
     const double t = juce::Time::getMillisecondCounterHiRes();
-    if (prof.voiceLimit > 0 && now > prof.voiceLimit)
+    const auto inUse = reg.consolesInUse();
+    const bool mismatch = std::count (inUse.begin(), inUse.end(), true) > 1;
+    if (! mismatch && prof.voiceLimit > 0 && now > prof.voiceLimit)
         overUntilMs = t + 2000.0;   // keep red long enough to notice a brief overload
-    songMeter.setState (now, prof.voiceLimit, t < overUntilMs);
+    songMeter.setState (now, prof.voiceLimit, ! mismatch && t < overUntilMs, mismatch);
+
+    if (mismatch)
+    {
+        songMeter.setTooltip ("Tracks in this project target different consoles, so limits can't be measured. Click for details.");
+        return;
+    }
 
     const int tracks = reg.instancesOn (console);
     songMeter.setTooltip ("Voices playing right now across " + juce::String (tracks)
@@ -477,6 +487,20 @@ void LotusEditor::updateSongMeter()
 
 void LotusEditor::showVerdict()
 {
+    const auto inUse = lotus::VoiceRegistry::get().consolesInUse();
+    juce::StringArray names;
+    for (int i = 0; i < lotus::numConsoles; ++i)
+        if (inUse[(size_t) i]) names.add (lotus::getConsoleProfile ((lotus::ConsoleId) i).name);
+    if (names.size() > 1)
+    {
+        const juce::String last = names[names.size() - 1];
+        names.remove (names.size() - 1);
+        verdict.showConfused ("Console mismatch!",
+                              "This project file uses " + names.joinIntoString (", ") + " and " + last
+                                  + ", so accuracy of limitations can not be measured.");
+        return;
+    }
+
     const auto console = processor.getConsole();
     const auto& prof = lotus::getConsoleProfile (console);
     auto& reg = lotus::VoiceRegistry::get();

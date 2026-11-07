@@ -263,10 +263,10 @@ const juce::Colour amber { 0xfff2c46d };
 const juce::Colour red   { 0xffff6b7a };
 }
 
-void SongMeter::setState (int v, int l, bool held)
+void SongMeter::setState (int v, int l, bool held, bool mixed)
 {
-    if (v == voices && l == limit && held == overHeld) return;
-    voices = v; limit = l; overHeld = held;
+    if (v == voices && l == limit && held == overHeld && mixed == mismatch) return;
+    voices = v; limit = l; overHeld = held; mismatch = mixed;
     repaint();
 }
 
@@ -279,6 +279,17 @@ void SongMeter::paint (juce::Graphics& g)
     g.drawRoundedRectangle (r, r.getHeight() * 0.5f, 1.0f);
 
     juce::Colour c = Palette::textFaint;
+    if (mismatch)
+    {
+        // Light off: limits can't be measured with several consoles in the project.
+        const auto dot = juce::Rectangle<float> (7.0f, 7.0f).withCentre ({ r.getX() + 11.0f, r.getCentreY() });
+        g.setColour (Palette::textFaint);
+        g.drawEllipse (dot, 1.2f);
+        g.setColour (Palette::textFaint);
+        g.setFont (font (11.0f, true));
+        g.drawText ("mixed", r.withTrimmedLeft (19.0f).withTrimmedRight (6.0f), juce::Justification::centredLeft);
+        return;
+    }
     if (voices > 0 || overHeld)
     {
         if (limit <= 0)                        c = Palette::leaf;
@@ -310,8 +321,19 @@ VerdictPopup::VerdictPopup()
     closeButton.onClick = [this] { setVisible (false); stopTimer(); };
 }
 
+void VerdictPopup::showConfused (const juce::String& t, const juce::String& d)
+{
+    show (1, t, d);
+    confused = true;
+    resetButton.setVisible (false);
+    closeButton.setButtonText ("Got it");
+}
+
 void VerdictPopup::show (int consoles, const juce::String& t, const juce::String& d)
 {
+    confused = false;
+    resetButton.setVisible (true);
+    closeButton.setButtonText ("Nice!");
     count = consoles;
     title = t;
     detail = d;
@@ -371,7 +393,20 @@ void VerdictPopup::drawConsole (juce::Graphics& g, juce::Rectangle<float> r, int
     const float cx = body.getCentreX();
     const float eyeDx = s * 0.17f, eyeR = s * 0.045f;
     g.setColour (Palette::text);
-    if (mood >= 2)
+    if (mood == 3)
+    {
+        // Confused: one small eye, one wide eye, a raised brow and a question mark.
+        g.fillEllipse (cx - eyeDx - eyeR * 0.8f, eyeY - eyeR * 0.8f, eyeR * 1.6f, eyeR * 1.6f);
+        g.drawEllipse (cx + eyeDx - eyeR * 1.4f, eyeY - eyeR * 1.4f, eyeR * 2.8f, eyeR * 2.8f, 1.6f);
+        g.fillEllipse (cx + eyeDx - eyeR * 0.5f, eyeY - eyeR * 0.5f, eyeR, eyeR);
+        g.drawLine (cx + eyeDx - eyeR * 2.0f, eyeY - s * 0.13f, cx + eyeDx + eyeR * 1.6f, eyeY - s * 0.16f, 1.6f);
+        g.setColour (Palette::accent);
+        g.setFont (font (s * 0.34f, true));
+        g.drawText ("?", juce::Rectangle<float> (body.getRight() - s * 0.08f, body.getY() - s * 0.30f, s * 0.3f, s * 0.4f),
+                    juce::Justification::centred);
+        g.setColour (Palette::text);
+    }
+    else if (mood >= 2)
     {
         for (float ex : { cx - eyeDx, cx + eyeDx })   // dizzy x eyes
         {
@@ -387,7 +422,13 @@ void VerdictPopup::drawConsole (juce::Graphics& g, juce::Rectangle<float> r, int
 
     juce::Path mouth;
     const float my = eyeY + s * 0.12f;
-    if (mood == 1)
+    if (mood == 3)
+    {
+        mouth.startNewSubPath (cx - s * 0.08f, my + s * 0.03f);   // squiggle
+        mouth.quadraticTo (cx - s * 0.04f, my - s * 0.01f, cx, my + s * 0.03f);
+        mouth.quadraticTo (cx + s * 0.04f, my + s * 0.07f, cx + s * 0.08f, my + s * 0.01f);
+    }
+    else if (mood == 1)
     {
         mouth.startNewSubPath (cx - s * 0.08f, my + s * 0.02f);   // nervous wobble
         mouth.quadraticTo (cx - s * 0.04f, my - s * 0.02f, cx, my + s * 0.02f);
@@ -431,8 +472,8 @@ void VerdictPopup::paint (juce::Graphics& g)
     const int mood = count <= 1 ? 0 : (count <= 3 ? 1 : 2);
     for (int i = 0; i < shown; ++i)
     {
-        const float bob = std::sin (phase + (float) i * 0.9f) * 3.0f;
-        drawConsole (g, { x, p.getY() + 30.0f + (84.0f - size) + bob, size, size * 0.86f }, count == 0 ? 0 : mood);
+        const float bob = confused ? std::sin (phase * 0.6f) * 2.0f : std::sin (phase + (float) i * 0.9f) * 3.0f;
+        drawConsole (g, { x, p.getY() + 30.0f + (84.0f - size) + bob, size, size * 0.86f }, confused ? 3 : (count == 0 ? 0 : mood));
         x += size + gap;
     }
     if (count > 8)
@@ -446,10 +487,10 @@ void VerdictPopup::paint (juce::Graphics& g)
     auto text = p.reduced (24.0f).withTrimmedTop (104.0f).withTrimmedBottom (44.0f);
     g.setColour (Palette::text);
     g.setFont (font (18.0f, true));
-    g.drawFittedText (title, text.removeFromTop (48.0f).toNearestInt(), juce::Justification::centred, 2);
+    g.drawFittedText (title, text.removeFromTop (48.0f).toNearestInt(), juce::Justification::centred, 2, 1.0f);
     g.setColour (Palette::textDim);
     g.setFont (font (12.5f));
-    g.drawFittedText (detail, text.toNearestInt(), juce::Justification::centredTop, 3);
+    g.drawFittedText (detail, text.toNearestInt(), juce::Justification::centredTop, 3, 1.0f);
 }
 
 void Chip::mouseDown (const juce::MouseEvent&)

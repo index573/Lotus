@@ -34,11 +34,14 @@ public:
     int instancesOn (ConsoleId console) const;
     void resetPeak (ConsoleId console);
 
+    /** Which consoles the instances in this process target (instances that haven't played yet don't count). */
+    std::array<bool, numConsoles> consolesInUse() const;
+
 private:
     struct Slot
     {
         std::atomic<bool> used { false };
-        std::atomic<int> console { 0 };
+        std::atomic<int> console { -1 };   // -1 until the instance first publishes
         std::atomic<int> voices { 0 };
     };
 

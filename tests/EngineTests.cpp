@@ -679,11 +679,21 @@ static void testVoiceRegistry()
     reg.resetPeak (ConsoleId::Snes);
     CHECK (reg.peakTotal (ConsoleId::Snes) == 6);
 
+    {
+        const auto inUse = reg.consolesInUse();
+        CHECK (inUse[(size_t) ConsoleId::Snes] && inUse[(size_t) ConsoleId::Ps1]);   // a mismatch
+        CHECK (! inUse[(size_t) ConsoleId::Modern]);
+        const int fresh = reg.join();                          // hasn't played yet: not counted
+        CHECK (! reg.consolesInUse()[(size_t) ConsoleId::Modern]);
+        reg.leave (fresh);
+    }
+
     reg.leave (b);
     CHECK (reg.currentTotal (ConsoleId::Snes) == 0);          // leaving drops its voices
     reg.leave (a);
     reg.leave (c);
     CHECK (reg.instancesOn (ConsoleId::Snes) == 0);
+    for (bool used : reg.consolesInUse()) CHECK (! used);
 }
 
 int main()
